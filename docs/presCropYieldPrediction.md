@@ -77,7 +77,7 @@
 
 **Искусственный интеллект для прогнозировании урожайности!**
 
-![](out\CropPredictionArch\CropAIYieldPredictionArchitechture.png)
+![](/out/CropPredictionArch/CropAIYieldPredictionArchitechture.png)
 
 ## Дальнейшее развитие функциональности
 
