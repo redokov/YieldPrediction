@@ -45,7 +45,7 @@ def main(kml_file, cell_size):
     return grid
 
 if __name__ == '__main__':
-    kml_file = 'docx\кур-гор-0003.kml'
+    kml_file = 'input\кур-гор-0003.kml'
     cell_size = 100
     grid = main(kml_file, cell_size)
     print(grid)
