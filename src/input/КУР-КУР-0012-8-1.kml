@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <Placemark>
+      <name>КУР-КУР-0012-8-1</name>
+      <Style id="25ad065c-ee0a-4deb-8303-3bf6c1d225e6">
+        <LineStyle>
+          <color>ff000000</color>
+          <width>1</width>
+        </LineStyle>
+        <PolyStyle>
+          <color>ff00ff00</color>
+          <colorMode>normal</colorMode>
+        </PolyStyle>
+      </Style>
+      <Polygon>
+        <outerBoundaryIs>
+          <LinearRing>
+            <coordinates>36.278305414000002,51.84547877
+36.271729143999998,51.846496901999998
+36.273250435999998,51.848330953999998
+36.279641830000003,51.847453979999997
+36.278323903,51.845476103999999
+36.278305414000002,51.84547877</coordinates>
+          </LinearRing>
+        </outerBoundaryIs>
+      </Polygon>
+    </Placemark>
+  </Document>
+</kml>
