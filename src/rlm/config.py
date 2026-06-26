@@ -6,8 +6,8 @@ class Settings(BaseSettings):
     """Конфигурация RLM"""
     buffer_meters: int = 500
     max_cloud_cover: int = 30
-    default_start_date: str = "2024-04-01"
-    default_end_date: str = "2024-09-30"
+    default_start_date: str = "2025-05-01"
+    default_end_date: str = "2025-05-31"
     copernicus_username: Optional[str] = None
     copernicus_password: Optional[str] = None
     openrouter_api_key: Optional[str] = None

@@ -45,11 +45,14 @@ def search(
 def analyze(
     kml_path: str = typer.Argument(..., help="Путь к KML-файлу"),
     year: int = typer.Option(2024, help="Год анализа"),
-    buffer: int = typer.Option(500, help="Буфер в метрах")
+    buffer: int = typer.Option(500, help="Буфер в метрах"),
+    use_llm: bool = typer.Option(True, "--llm/--no-llm", help="Использовать Qwen3 анализ")
 ):
     """Полный анализ поля"""
-    result = process_scene(kml_path=kml_path, year=year)
+    result = process_scene(kml_path=kml_path, year=year, use_llm=use_llm)
+    typer.echo("\n" + "="*80)
     typer.echo(result.report)
+    typer.echo("="*80)
     return result
 
 
