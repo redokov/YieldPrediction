@@ -29,21 +29,53 @@ def create_buffer(kml_path: str, buffer_meters: int = None) -> str:
 
 
 def list_scenes(request: SearchRequest) -> List[SceneMetadata]:
-    """Поиск сцен Sentinel-2 через Dagshub (s3://sentinel-cogs) — без Copernicus"""
+    """Поиск сцен Sentinel-2 L2A через STAC API (Earth Search by Element 84).
+    Используется pystac-client + коллекция sentinel-2-l2a вместо ручного перебора JSON."""
     import logging
+    from datetime import datetime
+    from pystac_client import Client
+    import geopandas as gpd
+    from shapely.geometry import mapping, box
+
     logger = logging.getLogger(__name__)
+    logger.info("Поиск сцен через STAC API (https://earth-search.aws.element84.com/v1)")
 
-    logger.info("Создание буферной зоны 500м...")
-    buffered_file = create_buffer(request.kml_path, request.buffer_meters)
-    logger.info(f"Буфер сохранён: {buffered_file}")
+    # Читаем геометрию поля
+    gdf = gpd.read_file(request.kml_path)
+    if gdf.crs is None:
+        gdf = gdf.set_crs("EPSG:4326")
+    bbox = gdf.total_bounds.tolist()  # [minx, miny, maxx, maxy]
 
-    logger.info(f"Поиск малооблачных сцен за {request.start_date[:4]}-05 через Dagshub/S3...")
-    scenes = get_available_scenes_from_dagshub(
-        kml_path=request.kml_path,
-        start_date=request.start_date,
-        end_date=request.end_date,
-        max_cloud=request.max_cloud_cover
+    client = Client.open("https://earth-search.aws.element84.com/v1")
+    search = client.search(
+        collections=["sentinel-2-l2a"],
+        bbox=bbox,
+        datetime=f"{request.start_date}/{request.end_date}",
+        query={"eo:cloud_cover": {"lte": request.max_cloud_cover}},
+        max_items=10,
+        # sortby убрано, т.к. вызывает ошибку mapping на сервере
     )
+
+    items = list(search.items())
+    logger.info(f"Найдено {len(items)} сцен по STAC-запросу (cloud ≤ {request.max_cloud_cover}%)")
+
+    scenes = []
+    for item in items:
+        props = item.properties
+        scene_id = item.id
+        date = datetime.fromisoformat(props["datetime"].replace("Z", "+00:00"))
+
+        scenes.append(SceneMetadata(
+            scene_id=scene_id,
+            date=date,
+            cloud_cover=float(props.get("eo:cloud_cover", 99.0)),
+            title=scene_id,
+            preview_url=item.assets.get("thumbnail", {}).href,
+            download_url=item.self_href  # ссылка на метаданные, дальше берём asset
+        ))
+        logger.info(f"Найдена сцена: {scene_id} | cloud={props.get('eo:cloud_cover', 99.0):.1f}%")
+
+    return scenes
 
     if not scenes:
         logger.warning("Сцены не найдены в sentinel-cogs за указанный период.")

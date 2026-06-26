@@ -67,10 +67,8 @@ def process_scene(
     logger.info(f"Выбрана сцена: {selected_scene.title} ({selected_scene.date.date()}), облачность {selected_scene.cloud_cover:.1f}%")
 
     # --- Реализация Этапа 2.5: Скачивание + прогресс-бар ---
-    logger.info("Шаг 3/4: Доступ к COG-файлам Sentinel-2 через Dagshub (S3)...")
-    # Для Dagshub мы не скачиваем SAFE, а работаем напрямую с COG (B04.tif, B08.tif, TCI.tif)
-    # scene_path теперь — это путь к JSON-метаданным или просто идентификатор
-    scene_path = f"s3://sentinel-cogs/sentinel-s2-l2a-cogs/{selected_scene.scene_id}"
+    logger.info("Шаг 3/4: Доступ к COG-файлам Sentinel-2 L2A (STAC assets)...")
+    scene_path = selected_scene  # теперь передаём весь объект SceneMetadata
 
     with tqdm(total=100, desc="Доступ к данным Dagshub", unit="%") as pbar:
         pbar.set_description("Загрузка метаданных...")
@@ -83,7 +81,7 @@ def process_scene(
     logger.info("Шаг 4/4: Расчёт спектральных индексов, визуализация RGB+NDVI с контуром...")
     start_time = datetime.now()
     indices_result = process_scene_indices(
-        safe_path=Path(scene_path),
+        safe_path=selected_scene,          # передаём объект SceneMetadata
         buffer_geojson_path=buffer_path,
         visualize=True,
         output_dir=Path("output")
