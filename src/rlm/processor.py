@@ -80,20 +80,22 @@ def process_scene(
         logger.info(f"Сцена доступна по пути: {scene_path}")
         pbar.close()
 
-    logger.info("Шаг 4/4: Расчёт спектральных индексов и применение маски облаков...")
+    logger.info("Шаг 4/4: Расчёт спектральных индексов, визуализация RGB+NDVI с контуром...")
     start_time = datetime.now()
     indices_result = process_scene_indices(
-        safe_path=Path("src/input/tci.tif"),  # используем локальный TCI для расчёта
-        buffer_geojson_path=buffer_path
+        safe_path=Path(scene_path),
+        buffer_geojson_path=buffer_path,
+        visualize=True,
+        output_dir=Path("output")
     )
     duration = (datetime.now() - start_time).total_seconds()
-    logger.info(f"Обработка индексов завершена за {duration:.1f} сек")
+    logger.info(f"Обработка и визуализация завершены за {duration:.1f} сек")
 
     logger.info("Шаг 4/4: Формирование отчёта...")
 
     # 4. Формируем подробный отчёт
     report_lines = [
-        "Отчёт по полю (RLM v0.2.0)",
+        "Отчёт по полю (RLM v0.2.1 - RGB + Contour)",
         f"KML: {Path(kml_path).name}",
         f"Выбранная сцена: {selected_scene.title}",
         f"Дата съёмки: {selected_scene.date.date()}",
@@ -105,6 +107,8 @@ def process_scene(
         f"Пикселей после маски облаков: {indices_result.get('valid_pixels_percent', 0):.1f}%",
         f"Время обработки: {duration:.1f} сек",
         f"Статус: {indices_result['status']}",
+        f"RGB: {indices_result.get('rgb_path', 'не сохранено')}",
+        f"NDVI: {indices_result.get('ndvi_path', 'не сохранено')}",
         "",
         indices_result.get('message', ''),
         indices_result.get('recommendation', '')
