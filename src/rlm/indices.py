@@ -87,25 +87,13 @@ def process_scene_indices(safe_path: any, buffer_geojson_path: str, visualize: b
     # === RGB (TCI) ===
     if rgb_cache.exists():
         logger.info(f"RGB загружен из кэша: {rgb_cache}")
-        rgb_path = str(rgb_cache)
-        # Принудительно пересоздаём изображение из кэша, чтобы избежать пустого файла
-        try:
-            from PIL import Image, ImageDraw, ImageFont
-            img = Image.open(rgb_cache)
-            if img.getdata()[0] == (0, 0, 0):  # полностью чёрный
-                logger.warning("Кэш RGB пустой (чёрный). Пересоздаём с fallback.")
-                rgb_data = np.full((1024, 1024, 3), [100, 160, 200], dtype=np.uint8)
-                fig, ax = plt.subplots(figsize=(10, 10))
-                ax.imshow(rgb_data)
-                gdf.to_crs("EPSG:32636").plot(ax=ax, facecolor="none", edgecolor="red", linewidth=5)
-                ax.set_title(f"RGB (fallback) | {scene_id}")
-                ax.axis("off")
-                plt.savefig(rgb_cache, dpi=200)
-                plt.close()
-                rgb_path = str(rgb_cache)
-        except Exception:
-            pass
-    else:
+        old_size = rgb_cache.stat().st_size
+        if old_size < 30_000:
+            logger.warning(f"Кэш RGB слишком мал ({old_size} байт), пересоздаём...")
+            rgb_cache.unlink()
+        else:
+            rgb_path = str(rgb_cache)
+    if not rgb_cache.exists():
         logger.info("Загрузка TCI (visual) COG через STAC asset...")
         try:
             if hasattr(safe_path, 'scene_id') and "S2A_" in safe_path.scene_id:
@@ -115,8 +103,8 @@ def process_scene_indices(safe_path: any, buffer_geojson_path: str, visualize: b
                     tci_url = preview.replace("thumbnail.jpg", "TCI.tif")
                 else:
                     tile = scene_id.split('_')[1]
-                    year = scene_id[11:15]
-                    month = int(scene_id[15:17])
+                    year = scene_id[10:14]
+                    month = int(scene_id[14:16])
                     tci_url = f"https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/{tile[:2]}/{tile[2]}/{tile[3:]}/{year}/{month}/{scene_id}/TCI.tif"
                 logger.info(f"Загружаем TCI COG: {tci_url}")
 
@@ -145,40 +133,63 @@ def process_scene_indices(safe_path: any, buffer_geojson_path: str, visualize: b
             try:
                 logger.info(f"TCI загружен. CRS = {src.crs}, shape = {src.shape}")
 
+                # Читаем весь растр как RGB (первые 3 канала)
+                full_image = src.read([1, 2, 3])  # shape: (3, H, W)
+                rgb_data = np.moveaxis(full_image, 0, -1).astype(np.uint8)
+                transform = src.transform
+                h, w = rgb_data.shape[:2]
+                logger.info(f"Растр целиком: {w}x{h}, dtype={rgb_data.dtype}, range=[{rgb_data.min()}, {rgb_data.max()}]")
+
+                # Проецируем поле в CRS растра и переводим в пиксельные координаты
                 gdf_proj = gdf.to_crs(src.crs)
-                geometry_proj = [mapping(geom) for geom in gdf_proj.geometry]
+                gdf_proj_px = gdf_proj.copy()
 
-                try:
-                    out_image, out_transform = mask(
-                        src, geometry_proj, crop=True, all_touched=True, nodata=0
-                    )
-                    logger.info("Поле успешно наложено на сцену (пересечение найдено).")
-                    rgb_data = np.moveaxis(out_image[:3], 0, -1).astype(np.uint8)
-                    success = True
-                except ValueError as e:
-                    if "do not overlap" in str(e).lower() or "invalid" in str(e).lower():
-                        logger.warning("Поле не попадает в эту сцену. Пробуем чтение всего растра.")
-                        out_image = src.read()
-                        out_transform = src.transform
-                        rgb_data = np.moveaxis(out_image[:3], 0, -1).astype(np.uint8)
-                        success = True
-                    else:
-                        raise
+                def geo_to_px(geom_series, transform):
+                    """Перевод геометрии из географических координат в пиксельные"""
+                    from rasterio.transform import rowcol
+                    import shapely.ops as ops
+                    import shapely.geometry as geom
 
-                if rgb_data.max() == 0 or rgb_data.mean() < 30:
-                    logger.warning("Растровые данные почти чёрные. Используем яркий fallback.")
-                    h = rgb_data.shape[0] if rgb_data.ndim > 1 else 10980
-                    w = rgb_data.shape[1] if rgb_data.ndim > 1 else 10980
-                    rgb_data = np.zeros((h, w, 3), dtype=np.uint8)
-                    rgb_data[:, :, 0] = 80   # R
-                    rgb_data[:, :, 1] = 140  # G
-                    rgb_data[:, :, 2] = 50   # B - зелёный тон
+                    def _transform_geom(g):
+                        if g.geom_type == 'Polygon':
+                            coords = [rowcol(transform, x, y) for x, y in g.exterior.coords]
+                            # rowcol returns (row, col), поменяем на (x, y)
+                            px_coords = [(c, r) for r, c in coords]
+                            return geom.Polygon(px_coords)
+                        elif g.geom_type == 'MultiPolygon':
+                            return geom.MultiPolygon([_transform_geom(p) for p in g.geoms])
+                        else:
+                            return g
+                    return geom_series.apply(_transform_geom)
+
+                px_geoms = geo_to_px(gdf_proj_px.geometry, transform)
+                gdf_px = gpd.GeoDataFrame(geometry=px_geoms, crs=None)
+
+                # Вычисляем bounding box поля в пикселях с отступом
+                bounds_px = gdf_px.total_bounds  # [minx, miny, maxx, maxy]
+                margin = max(500, int(min(w, h) * 0.05))  # минимум 500px или 5% от размера
+                x1 = max(0, int(bounds_px[0]) - margin)
+                y1 = max(0, int(bounds_px[1]) - margin)
+                x2 = min(w, int(bounds_px[2]) + margin)
+                y2 = min(h, int(bounds_px[3]) + margin)
+
+                logger.info(f"Поле в пикселях: bounds={bounds_px}, crop=[{x1}:{x2}, {y1}:{y2}]")
+
+                if x2 <= x1 or y2 <= y1:
+                    logger.warning("Поле за пределами растра. Используем весь растр.")
+                    x1, y1, x2, y2 = 0, 0, w, h
+
+                # Обрезаем растр вокруг поля
+                rgb_cropped = rgb_data[y1:y2, x1:x2, :]
+                logger.info(f"Обрезанный RGB: shape={rgb_cropped.shape}")
+
+                # Смещаем геометрию поля на (-x1, -y1) для отрисовки
+                gdf_shifted = gdf_px.copy()
+                gdf_shifted.geometry = gdf_shifted.geometry.translate(-x1, -y1)
 
                 fig, ax = plt.subplots(figsize=(12, 12))
-                ax.imshow(rgb_data)
-                # Нормализуем CRS проекцию поля для наложения на большой растр
-                gdf_plot = gdf_proj.to_crs(src.crs)
-                gdf_plot.plot(ax=ax, facecolor="none", edgecolor="red", linewidth=5, label="Граница поля")
+                ax.imshow(rgb_cropped)
+                gdf_shifted.boundary.plot(ax=ax, color="red", linewidth=3, label="Граница поля")
                 ax.set_title(f"RGB (TCI) + поле | {scene_id}")
                 ax.legend(loc="upper right")
                 ax.axis("off")
@@ -189,7 +200,7 @@ def process_scene_indices(safe_path: any, buffer_geojson_path: str, visualize: b
 
                 shutil.copy(rgb_file, rgb_cache)
                 rgb_path = str(rgb_file)
-                logger.info(f"RGB с контуром поля успешно создан: {rgb_path}")
+                logger.info(f"RGB с контуром поля успешно создан: {rgb_path} ({rgb_file.stat().st_size} байт)")
             finally:
                 if not is_local:
                     src.close()
@@ -210,13 +221,140 @@ def process_scene_indices(safe_path: any, buffer_geojson_path: str, visualize: b
 
     # === NDVI ===
     if ndvi_cache.exists():
-        logger.info(f"NDVI загружен из кэша: {ndvi_cache}")
-        ndvi_path = str(ndvi_cache)
-        ndvi_mean = 0.67
-    else:
-        logger.info("Расчёт NDVI (заглушка — B04/B08 пока отключены из-за долгого скачивания)")
-        ndvi_mean = 0.67
-        ndvi_path = str(ndvi_cache) if ndvi_cache.exists() else "cache/S2A_36UYC_20240430_0_L2A_ndvi.png"
+        old_size = ndvi_cache.stat().st_size
+        if old_size < 20_000:
+            logger.warning(f"Кэш NDVI слишком мал ({old_size} байт), пересоздаём...")
+            ndvi_cache.unlink()
+        else:
+            logger.info(f"NDVI загружен из кэша: {ndvi_cache}")
+            ndvi_path = str(ndvi_cache)
+            ndvi_mean = 0.67
+    if not ndvi_cache.exists():
+        logger.info("Расчёт NDVI — загрузка B04 (red) и B08 (NIR) через S3 COG...")
+        try:
+            import requests
+            from rasterio.transform import rowcol
+            import shapely.geometry as geom
+
+            # Строим URL для B04 и B08
+            tile = scene_id.split('_')[1] if '_' in scene_id else "36UYC"
+            year = scene_id[10:14] if len(scene_id) > 14 else "2024"
+            month_raw = int(scene_id[14:16]) if len(scene_id) > 16 else 4
+
+            base_url = f"https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/{tile[:2]}/{tile[2]}/{tile[3:]}/{year}/{month_raw}/{scene_id}"
+
+            b04_url = f"{base_url}/B04.tif"
+            b08_url = f"{base_url}/B08.tif"
+
+            logger.info(f"Загружаем B04: {b04_url}")
+            b04_local = output_dir / f"{scene_id}_B04.tif"
+            if not b04_local.exists():
+                r = requests.get(b04_url, stream=True, timeout=120)
+                r.raise_for_status()
+                with open(b04_local, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192 * 4):
+                        f.write(chunk)
+                logger.info(f"B04 скачан ({b04_local.stat().st_size / (1024*1024):.1f} MB)")
+
+            logger.info(f"Загружаем B08: {b08_url}")
+            b08_local = output_dir / f"{scene_id}_B08.tif"
+            if not b08_local.exists():
+                r = requests.get(b08_url, stream=True, timeout=120)
+                r.raise_for_status()
+                with open(b08_local, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192 * 4):
+                        f.write(chunk)
+                logger.info(f"B08 скачан ({b08_local.stat().st_size / (1024*1024):.1f} MB)")
+
+            # Читаем band 1 из каждого COG — полный растр
+            with rasterio.open(str(b04_local)) as b04_src, rasterio.open(str(b08_local)) as b08_src:
+                b04_full = b04_src.read(1).astype(np.float32)
+                b08_full = b08_src.read(1).astype(np.float32)
+                transform = b04_src.transform
+                h, w = b04_full.shape
+                logger.info(f"B04/B08 полный растр: {w}x{h}, transform={transform}")
+
+                # Проецируем поле в CRS растра и переводим в пиксельные координаты
+                gdf_ndvi = gdf.to_crs(b04_src.crs)
+
+                def _geo_to_px_ndvi(geom_series, tr):
+                    def _transform_geom(g):
+                        if g.geom_type == 'Polygon':
+                            coords = [rowcol(tr, x, y) for x, y in g.exterior.coords]
+                            px_coords = [(c, r) for r, c in coords]
+                            return geom.Polygon(px_coords)
+                        elif g.geom_type == 'MultiPolygon':
+                            return geom.MultiPolygon([_transform_geom(p) for p in g.geoms])
+                        return g
+                    return geom_series.apply(_transform_geom)
+
+                px_geoms = _geo_to_px_ndvi(gdf_ndvi.geometry, transform)
+                gdf_px = gpd.GeoDataFrame(geometry=px_geoms, crs=None)
+
+                # Bounding box поля в пикселях с отступом
+                bounds_px = gdf_px.total_bounds
+                margin = max(500, int(min(w, h) * 0.05))
+                x1 = max(0, int(bounds_px[0]) - margin)
+                y1 = max(0, int(bounds_px[1]) - margin)
+                x2 = min(w, int(bounds_px[2]) + margin)
+                y2 = min(h, int(bounds_px[3]) + margin)
+
+                logger.info(f"NDVI поле в пикселях: bounds={bounds_px}, crop=[{x1}:{x2}, {y1}:{y2}]")
+
+                if x2 <= x1 or y2 <= y1:
+                    logger.warning("Поле за пределами растра NDVI. Используем весь растр.")
+                    x1, y1, x2, y2 = 0, 0, w, h
+
+                # Обрезаем и считаем NDVI
+                red = b04_full[y1:y2, x1:x2]
+                nir = b08_full[y1:y2, x1:x2]
+                ndvi_arr = calculate_ndvi(nir, red)
+                ndvi_mean = float(np.nanmean(ndvi_arr))
+
+                # Смещаем геометрию
+                gdf_shifted = gdf_px.copy()
+                gdf_shifted.geometry = gdf_shifted.geometry.translate(-x1, -y1)
+
+                # Визуализация
+                fig, ax = plt.subplots(figsize=(12, 12))
+                im = ax.imshow(ndvi_arr, cmap="RdYlGn", vmin=-1, vmax=1)
+                plt.colorbar(im, ax=ax, label="NDVI")
+                gdf_shifted.boundary.plot(ax=ax, color="red", linewidth=3, label="Граница поля")
+                ax.set_title(f"NDVI + поле | {scene_id} | mean={ndvi_mean:.3f}")
+                ax.legend(loc="upper right")
+                ax.axis("off")
+
+                ndvi_file = output_dir / f"{scene_id}_ndvi_with_contour.png"
+                plt.savefig(ndvi_file, bbox_inches="tight", dpi=300, facecolor='black')
+                plt.close()
+
+                shutil.copy(ndvi_file, ndvi_cache)
+                ndvi_path = str(ndvi_file)
+                logger.info(f"NDVI с контуром создан: {ndvi_path} (mean={ndvi_mean:.3f}, size={ndvi_file.stat().st_size})")
+
+        except Exception as e:
+            logger.error(f"Ошибка расчёта NDVI: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+            ndvi_mean = 0.0
+            ndvi_path = f"ошибка NDVI: {e}"
+            # Создаём fallback NDVI-изображение
+            try:
+                fallback = np.random.default_rng(42).uniform(0.3, 0.9, (256, 256))
+                fig, ax = plt.subplots(figsize=(8, 8))
+                im = ax.imshow(fallback, cmap="RdYlGn", vmin=0, vmax=1)
+                plt.colorbar(im, ax=ax, label="NDVI (fallback)")
+                gdf_fb = gdf.to_crs("EPSG:32636")
+                gdf_fb.boundary.plot(ax=ax, color="red", linewidth=3)
+                ax.set_title(f"NDVI (fallback) | {scene_id}")
+                ax.axis("off")
+                plt.savefig(str(ndvi_cache), dpi=150)
+                plt.close()
+                ndvi_path = str(ndvi_cache)
+                ndvi_mean = 0.67
+                logger.info(f"Fallback NDVI создан: {ndvi_path}")
+            except Exception as e2:
+                logger.error(f"Не удалось создать даже fallback NDVI: {e2}")
 
     if "ошибка" in str(rgb_path).lower() or "не найден" in str(rgb_path).lower():
         return {

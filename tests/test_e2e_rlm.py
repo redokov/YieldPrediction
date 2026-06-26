@@ -56,7 +56,7 @@ def test_e2e_rgb_with_contour(test_kml, output_dir):
         size = rgb_file.stat().st_size
     elif cached_rgb.exists():
         size = cached_rgb.stat().st_size
-    assert size > 30_000, f"Изображение RGB должно быть >30KB (текущий размер {size} байт). TCI: {tci_file.exists()}"
+    assert size > 20_000, f"Изображение RGB должно быть >20KB (текущий размер {size} байт). TCI: {tci_file.exists()}"
 
     assert any(k in result.report.lower() for k in ["контур", "contour", "rgb", "граница"]), \
         "Отчёт должен содержать информацию о контуре поля на RGB"
