@@ -152,3 +152,35 @@ def test_multi_scene_2024_2025(test_kml, output_dir):
         print(f"  Сцена {i+1}: {scene_id} | {r.selected_scene.date.date()} | cloud={r.selected_scene.cloud_cover:.0f}% | OK")
 
     print(f"\nМногосценовой тест пройден: {len(results)} сцен обработано.")
+
+
+def test_filter_pipeline(test_kml):
+    """Сценарий 4: двухэтапная фильтрация (STAC + пиксельная проверка SCL)"""
+    from src.rlm.sentinel_filter import filter_pipeline
+
+    results = filter_pipeline(
+        kml_path=test_kml,
+        date_range="2024-05-01/2024-06-30",  # май–июнь 2024
+        max_cloud_percent=15.0,
+        max_scene_cloud_prefilter=90.0,
+    )
+
+    assert isinstance(results, list), "Результат должен быть списком"
+
+    if len(results) > 0:
+        for r in results:
+            assert "item_id" in r
+            assert "datetime" in r
+            assert "cloud_cover_scene" in r
+            assert "cloud_cover_field" in r
+            assert "nodata_percent" in r
+            assert "assets" in r
+            assert r["cloud_cover_field"] <= 15.0, \
+                f"Облачность над полем {r['cloud_cover_field']}% > порога 15%"
+            assert r["nodata_percent"] == 0.0, \
+                f"Nodata над полем {r['nodata_percent']}% — должно быть 0"
+            assert "visual" in r["assets"] or "TCI" in str(r["assets"]), \
+                f"Должен быть visual ассет: {r['assets'].keys()}"
+            print(f"  OK: {r['item_id']} | {r['datetime'][:10]} | cloud_field={r['cloud_cover_field']}%")
+
+    print(f"Фильтрация завершена: проверено снимков, прошло {len(results)}")

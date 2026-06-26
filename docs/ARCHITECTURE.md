@@ -1,9 +1,11 @@
 # Архитектура RLM (RLM Architecture)
 
+**Версия документа:** 1.1 (актуализирован 2026-06-26)
+
 ## 1. Общее описание
 
-**RLM (Remote Learning & Monitoring)** — модульная система для поиска, обработки и анализа спутниковых данных Sentinel-2 с фокусом на агрономические задачи.  
-Система позволяет получать снимки полей с буферной зоной, рассчитывать спектральные индексы и получать экспертные рекомендации через LLM (Qwen3 via OpenRouter).
+**RLM (Remote Sensing & Monitoring)** — модульная система для поиска, обработки и анализа спутниковых данных Sentinel-2 с фокусом на агрономические задачи.  
+Система позволяет получать снимки полей с буферной зоной, рассчитывать спектральные индексы (NDVI, NDWI) и получать экспертные рекомендации через LLM (Qwen3 via OpenRouter).
 
 Архитектура спроектирована как **лёгкий, расширяемый Python-пакет** с сильной интеграцией через **MCP** (Model Context Protocol).
 
@@ -13,7 +15,7 @@
 
 - Чёткое разделение ответственности (Separation of Concerns)
 - Лёгкая интеграция с AI-агентами через MCP
-- Минимальные зависимости при быстром поиске и фильтрации сцен
+- Минимальные зависимости при быстром поиске и фильтрации сцен через STAC API
 - Возможность постепенного добавления визуализации и ML-моделей
 - Поддержка как CLI, так и серверного (MCP) режима работы
 
@@ -29,108 +31,110 @@ graph TD
     B --> E[Processor Service]
     B --> F[LLM Service]
     
-    D --> G[ Sentinel-2 Catalog\n(sentinelsat / planetary-computer) ]
-    E --> H[Geospatial Processor\n(geopandas, shapely, rasterio)]
-    E --> I[Index Calculator\n(NDVI, NDWI, SCL mask)]
-    F --> J[LiteLLM + OpenRouter\n(Qwen3-70B)]
+    D --> G["STAC API (Earth Search by Element 84)"]
+    D --> H["Dagshub S3 (legacy)"]
+    E --> I[Geospatial Processor\n(geopandas, shapely, rasterio)]
+    E --> J[Index Calculator\n(NDVI, NDWI, SCL mask)]
+    F --> K[LiteLLM + OpenRouter\n(Qwen3-70B)]
     
-    E --> K[Output: Report + Images]
-    F --> K
+    E --> L[Output: Report + Images (RGB, NDVI)]
+    F --> L
 ```
 
 ---
 
-## 4. Структура проекта
+## 4. Структура проекта (фактическая)
 
 ```
 docs/
 ├── README.md
 ├── DEVELOPMENT_PLAN.md
 ├── ARCHITECTURE.md          ← текущий документ
-├── API.md
-└── USER_STORIES.md
+└── presCropYieldPrediction.md
 
 src/rlm/
-├── __init__.py
-├── config.py                # Настройки, PydanticSettings
-├── models.py                # Pydantic-модели (Scene, Field, Request, Response)
-├── cli.py                   # Командная строка (typer/click)
-├── server.py                # MCP сервер + инструменты
-├── llm.py                   # Обёртка над LiteLLM + Qwen3
-├── search.py                # Поиск сцен (catalog query)
-├── processor.py             # Буфер, вырезка, маски, индексы
-├── visualizer.py            # (минимальная версия — отложена)
-├── utils.py
-└── exceptions.py
+├── __init__.py                # Версия 0.2.0, импорт публичных API
+├── config.py                  # PydanticSettings: buffer_meters, max_cloud_cover, даты, API-ключи
+├── models.py                  # Pydantic-модели: FieldBoundary, SceneMetadata, SearchRequest, AnalysisResult
+├── cli.py                     # CLI-интерфейс (typer): команды search, analyze
+├── server.py                  # MCP-сервер (FastMCP): инструменты list_available_scenes, analyze_field
+├── search.py                  # Поиск сцен через STAC API (pystac-client) + create_buffer()
+├── dagshub_search.py          # Поиск сцен через Dagshub S3 (устаревающий, для fallback)
+├── processor.py               # Оркестратор: create_buffer → list_scenes → process_scene_indices → отчёт
+├── indices.py                 # Расчёт NDVI/NDWI + визуализация RGB/NDVI с контуром поля
+├── downloader.py              # Скачивание/доступ к COG-файлам Sentinel-2 L2A
+├── sentinel_filter.py         # Фильтрация облачности (SCL band)
+├── llm.py                     # Обёртка LiteLLM + OpenRouter (Qwen3-70B)
+└── utils.py                   # Вспомогательные функции (если есть)
 ```
 
 ### Ключевые модули и их ответственность
 
-| Модуль            | Ответственность |
-|-------------------|-----------------|
-| `config.py`       | Загрузка `.env`, параметры по умолчанию (buffer_meters=500, max_cloud_cover=30 и т.д.) |
-| `models.py`       | Строго типизированные модели: `FieldBoundary`, `SceneMetadata`, `VisualizationRequest`, `LLMAnalysis` |
-| `search.py`       | Поиск сцен Sentinel-2, фильтрация по дате, облачности, Level-2A. Возвращает список `SceneMetadata` |
-| `processor.py`    | **Основная бизнес-логика**:<br>• Создание буфера 500 м<br>• Скачивание/доступ к сцене<br>• Вырезка по bounding box<br>• Расчёт индексов<br>• Применение облачной маски (SCL) |
-| `llm.py`          | Взаимодействие с Qwen3. Поддержка `analyze_scene()` — анализ индексов + текстового описания снимка |
-| `server.py`       | Реализация MCP-инструментов (`list_scenes`, `analyze_field`, `ask_agronomist` и др.) |
-| `cli.py`          | Удобный интерфейс командной строки |
+| Модуль               | Ответственность |
+|----------------------|-----------------|
+| `config.py`          | Загрузка `.env`, параметры по умолчанию (buffer_meters=500, max_cloud_cover=30 и т.д.) |
+| `models.py`          | Строго типизированные модели: `FieldBoundary`, `SceneMetadata`, `SearchRequest`, `AnalysisResult` |
+| `search.py`          | Поиск сцен Sentinel-2 через STAC API (Earth Search by Element 84), фильтрация по дате, облачности, Level-2A. Возвращает список `SceneMetadata`. Также содержит `create_buffer()` |
+| `dagshub_search.py`  | Альтернативный поиск сцен через прямые COG-файлы на S3 (Dagshub bucket). MGRS-based |
+| `processor.py`       | **Оркестратор бизнес-логики**:<br>• Создание буфера 500 м<br>• Поиск сцен (STAC + fallback на демо)<br>• Запуск расчёта индексов<br>• Формирование отчёта<br>• Многосценовая обработка (`process_multiple_scenes`) |
+| `indices.py`         | Расчёт NDVI, NDWI, визуализация RGB + NDVI с наложением контура поля |
+| `sentinel_filter.py` | Применение облачной маски (SCL band Level-2A) |
+| `llm.py`             | Взаимодействие с Qwen3 через LiteLLM. Поддержка `call_llm()` |
+| `server.py`          | Реализация MCP-инструментов (`list_available_scenes`, `analyze_field`) |
+| `cli.py`             | Удобный интерфейс командной строки (команды `search`, `analyze`) |
 
 ---
 
 ## 5. Поток выполнения основного сценария
 
-1. Пользователь вызывает `analyze_field("field.kml")` (через MCP или CLI).
-2. `processor.create_buffer()` — создаёт внешнюю зону 500 метров.
-3. `search.list_scenes()` — возвращает список доступных чистых сцен.
-4. Пользователь (или агент) выбирает сцену.
-5. `processor.process_scene()`:
-   - Загружает нужные бэнды
-   - Вырезает по буферу
-   - Применяет SCL-маску
-   - Считает NDVI, NDWI и другие индексы
-6. `llm.analyze()` — отправляет сводку по индексам + метаданные в Qwen3.
-7. Возвращается структурированный отчёт + (позже) путь к сгенерированному изображению.
+1. Пользователь вызывает `rlm analyze field.kml` (через CLI) или `analyze_field("field.kml")` (через MCP).
+2. `processor.process_scene()` — точка входа:
+   - **Шаг 1:** `search.create_buffer()` — создаёт внешнюю зону 500 метров (GeoJSON).
+   - **Шаг 2:** `processor.list_scenes()` — поиск сцен через STAC API + fallback на Dagshub S3.
+   - **Шаг 3:** Выбор лучшей сцены (минимальная облачность).
+   - **Шаг 4:** `indices.process_scene_indices()` — загрузка COG-бэндов (TCI, B04, B08), расчёт NDVI/NDWI, маска облачности, визуализация RGB + NDVI с контуром.
+3. Формируется текстовый отчёт с метриками.
+4. (Опционально) `llm.call_llm()` — отправка отчёта в Qwen3 для агрономических рекомендаций.
+5. Возвращается `AnalysisResult` со статусом, отчётом и LLM-анализом.
+
+### Многосценовый режим
+
+Функция `process_multiple_scenes()` реализует пакетную обработку:
+1. Поиск всех доступных сцен за период.
+2. Выбор первых N сцен (по умолчанию 5).
+3. Для каждой — расчёт индексов и визуализация.
+4. Возврат списка результатов.
 
 ---
 
 ## 6. Технические решения и библиотеки
 
 - **Геометрия и буфер**: `shapely` + `geopandas` (буфер в метрах с `to_crs` в UTM)
-- **Каталог Sentinel-2**: Сначала `sentinelsat`, в дальнейшем переход на `planetary-computer` или `sentinelhub-py` (COG, быстрее)
+- **Каталог Sentinel-2**: `pystac-client` → Earth Search (Element 84). Legacy: `sentinelsat`, Dagshub S3
 - **Обработка растра**: `rasterio`, `rioxarray`, `numpy`
-- **Облачная маска**: SCL band (Level-2A)
+- **Облачная маска**: SCL band (Level-2A) через `sentinel_filter.py`
 - **LLM**: `litellm` → OpenRouter → `qwen/qwen3-70b`
 - **MCP**: `mcp.server.fastmcp.FastMCP`
-- **CLI**: `typer` (рекомендуется) или `click`
+- **CLI**: `typer`
 - **Конфигурация**: `pydantic-settings`
 
 ---
 
 ## 7. Решения по отложенным частям
 
-- Полноценный `visualizer.py` (matplotlib, folium, легенды) — отложен до следующей итерации.
-- В текущей версии визуализация будет минимальной: сохранение PNG с помощью `rasterio.plot` + наложение контура через `geopandas`.
-- Веб-интерфейс (Streamlit/Gradio) — Этап 4 (опционально).
+- Полноценный `visualizer.py` (matplotlib, folium, легенды) — отложен. Визуализация встроена в `indices.py` (минимальная: сохранение PNG с помощью `matplotlib` + наложение контура через `geopandas`).
+- Веб-интерфейс (Streamlit/Gradio) — в планах.
 
 ---
 
 ## 8. Расширяемость
 
-- Легко добавить другие спутники (Landsat, Sentinel-1).
-- Возможность подключения собственных ML-моделей прогноза урожайности.
-- Поддержка нескольких форматов входных данных (KML, GeoJSON, Shapefile).
+- Легко добавить другие спутники (Landsat, Sentinel-1) — новый провайдер в `search.py`.
+- Возможность подключения собственных ML-моделей прогноза урожайности (см. `docs/presCropYieldPrediction.md`).
+- Поддержка нескольких форматов входных данных (KML, GeoJSON, Shapefile) — уже реализована через `geopandas`.
+- Добавление новых вегетационных индексов: расширение `indices.py`.
 
 ---
 
-**Дата создания:** {{current_date}}  
-**Статус:** Утверждена вместе с `DEVELOPMENT_PLAN.md` (без отдельного большого Этапа 3).
-
----
-
-Готовы ли вы начать реализацию кода по Этапу 1?
-
-Если да — скажите **«Начинай Этап 1»**, и я:
-1. Создам недостающие модули (`config.py`, `models.py`, `search.py`, `processor.py`).
-2. Обновлю `server.py` и `cli.py`.
-3. Реализую функцию создания буфера 500 метров и улучшенный поиск сцен.
+**Дата создания:** 2026-06-26  
+**Статус:** Актуализирован под версию кода 0.2.0
