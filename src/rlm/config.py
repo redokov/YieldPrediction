@@ -13,10 +13,11 @@ class Settings(BaseSettings):
     openrouter_api_key: Optional[str] = None
     litellm_model: str = "openrouter/qwen/qwen3-70b"
 
-    class Config:
-        env_file = ".env"
-        env_prefix = "RLM_"
-        extra = "ignore"
+    model_config = {
+        "env_file": ".env",
+        "env_prefix": "RLM_",
+        "extra": "ignore"
+    }
 
 
 settings = Settings()
