@@ -1,11 +1,11 @@
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 from tqdm import tqdm
 
 from .config import settings
-from .search import create_buffer, list_scenes
+from .search import create_buffer, list_scenes, list_available_scenes
 from .dagshub_search import get_available_scenes_from_dagshub
 from .indices import process_scene_indices
 from .models import SearchRequest, AnalysisResult, SceneMetadata
@@ -109,7 +109,7 @@ def process_scene(
         f"NDVI: {indices_result.get('ndvi_path', 'не сохранено')}",
         "",
         indices_result.get('message', ''),
-        indices_result.get('recommendation', '')
+indices_result.get('recommendation', '')
     ]
 
     report = "\n".join(report_lines)
@@ -129,4 +129,102 @@ def process_scene(
         report=report,
         llm_analysis=llm_analysis
     )
+
+
+def process_multiple_scenes(
+    kml_path: str,
+    start_date: str = "2024-01-01",
+    end_date: str = "2025-12-31",
+    max_cloud_cover: int = 100,
+    max_scenes: int = 5,
+    use_llm: bool = False
+) -> List[AnalysisResult]:
+    """
+    Сценарий: показать доступные сцены за период, загрузить первые N, сделать RGB+NDVI с контуром.
+
+    1. Ищет все сцены за период (list_available_scenes)
+    2. Берёт первые max_scenes
+    3. Для каждой: скачивает TCI → RGB+contour, скачивает B04/B08 → NDVI+contour
+    4. Возвращает список результатов
+    """
+    logger.info(f"=== Многосценовая обработка: {kml_path} ===")
+    logger.info(f"Период: {start_date} — {end_date}, cloud ≤ {max_cloud_cover}%, лимит: {max_scenes} сцен")
+
+    # Шаг 1: поиск всех сцен
+    logger.info("Шаг 1/3: Поиск доступных сцен...")
+    all_scenes = list_available_scenes(
+        kml_path=kml_path,
+        start_date=start_date,
+        end_date=end_date,
+        max_cloud_cover=max_cloud_cover,
+        max_items=50
+    )
+
+    if not all_scenes:
+        logger.warning("Сцены не найдены за указанный период.")
+        return []
+
+    # Показываем таблицу найденных сцен
+    logger.info(f"\n{'='*70}")
+    logger.info(f"Доступные сцены за {start_date} — {end_date}: {len(all_scenes)} шт.")
+    logger.info(f"{'='*70}")
+    for i, s in enumerate(all_scenes):
+        marker = " ← выбран" if i < max_scenes else ""
+        logger.info(f"  {i+1:3d}. {s.scene_id} | {s.date.date()} | cloud={s.cloud_cover:.0f}%{marker}")
+    logger.info(f"{'='*70}")
+
+    # Шаг 2: буфер
+    logger.info("Шаг 2/3: Создание буфера...")
+    buffer_path = create_buffer(kml_path, settings.buffer_meters)
+    logger.info(f"Буфер: {buffer_path}")
+
+    # Берём первые max_scenes
+    selected = all_scenes[:max_scenes]
+    logger.info(f"Обрабатываем первые {len(selected)} сцен: {[s.scene_id for s in selected]}")
+
+    # Шаг 3: обработка каждой сцены
+    results = []
+    for idx, scene in enumerate(selected):
+        logger.info(f"\n{'─'*50}")
+        logger.info(f"Сцена {idx+1}/{len(selected)}: {scene.scene_id} ({scene.date.date()}), cloud={scene.cloud_cover:.0f}%")
+
+        start_time = datetime.now()
+        indices_result = process_scene_indices(
+            safe_path=scene,
+            buffer_geojson_path=buffer_path,
+            visualize=True,
+            output_dir=Path("output")
+        )
+        duration = (datetime.now() - start_time).total_seconds()
+
+        report_lines = [
+            f"Отчёт по сцене {scene.scene_id}",
+            f"Дата съёмки: {scene.date.date()}",
+            f"Облачность: {scene.cloud_cover:.1f}%",
+            "",
+            "=== Результаты ===",
+            f"NDVI (средний): {indices_result.get('ndvi_mean', 0):.3f}",
+            f"NDWI (средний): {indices_result.get('ndwi_mean', 0):.3f}",
+            f"Время обработки: {duration:.1f} сек",
+            f"RGB: {indices_result.get('rgb_path', '—')}",
+            f"NDVI: {indices_result.get('ndvi_path', '—')}",
+            f"Статус: {indices_result.get('status', 'unknown')}",
+        ]
+        report = "\n".join(report_lines)
+
+        result = AnalysisResult(
+            status=indices_result.get("status", "success"),
+            scenes_found=len(all_scenes),
+            selected_scene=scene,
+            report=report,
+            llm_analysis=None
+        )
+        results.append(result)
+        logger.info(f"Готово: {scene.scene_id} за {duration:.1f}s, NDVI={indices_result.get('ndvi_mean', 0):.3f}")
+
+    logger.info(f"\n{'='*70}")
+    logger.info(f"Многосценовая обработка завершена. Обработано {len(results)} из {len(all_scenes)} сцен.")
+    logger.info(f"{'='*70}")
+
+    return results
 

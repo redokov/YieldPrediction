@@ -114,3 +114,41 @@ def test_cache_mechanism(test_kml):
     assert second_run < first_run * 2, f"Второй запуск ({second_run:.2f}s) должен быть быстрее первого ({first_run:.2f}s) благодаря кэшу"
 
     print(f"Тест кэша пройден. Первый запуск: {first_run:.2f}s, второй: {second_run:.2f}s")
+
+
+def test_multi_scene_2024_2025(test_kml, output_dir):
+    """Сценарий 3: доступные сцены за 2024–2025, загрузка 5 первых, RGB+NDVI с контуром"""
+    from src.rlm.processor import process_multiple_scenes
+
+    results = process_multiple_scenes(
+        kml_path=test_kml,
+        start_date="2024-01-01",
+        end_date="2025-12-31",
+        max_cloud_cover=80,
+        max_scenes=5,
+        use_llm=False
+    )
+
+    assert len(results) >= 1, f"Должна быть обработана хотя бы 1 сцена, получено {len(results)}"
+    assert len(results) <= 5, f"Должно быть обработано ≤ 5 сцен, получено {len(results)}"
+
+    for i, r in enumerate(results):
+        assert r.status in ("success", "warning"), f"Сцена {i+1}: статус={r.status}"
+        assert r.selected_scene is not None, f"Сцена {i+1}: нет selected_scene"
+        scene_id = r.selected_scene.scene_id
+
+        # RGB файл
+        rgb_file = output_dir / f"{scene_id}_rgb_with_contour.png"
+        cached_rgb = Path("cache") / f"{scene_id}_rgb.png"
+        assert rgb_file.exists() or cached_rgb.exists(), \
+            f"Сцена {i+1} ({scene_id}): нет RGB ({rgb_file}, {cached_rgb})"
+
+        # NDVI файл
+        ndvi_file = output_dir / f"{scene_id}_ndvi_with_contour.png"
+        cached_ndvi = Path("cache") / f"{scene_id}_ndvi.png"
+        assert ndvi_file.exists() or cached_ndvi.exists(), \
+            f"Сцена {i+1} ({scene_id}): нет NDVI ({ndvi_file}, {cached_ndvi})"
+
+        print(f"  Сцена {i+1}: {scene_id} | {r.selected_scene.date.date()} | cloud={r.selected_scene.cloud_cover:.0f}% | OK")
+
+    print(f"\nМногосценовой тест пройден: {len(results)} сцен обработано.")

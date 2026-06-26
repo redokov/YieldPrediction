@@ -1,6 +1,6 @@
 import os
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 from sentinelsat import SentinelAPI, geojson_to_wkt
 import geopandas as gpd
 
@@ -26,6 +26,59 @@ def create_buffer(kml_path: str, buffer_meters: int = None) -> str:
     buffered_path = kml_path.replace(".kml", f"_buffer_{buffer_meters}m.geojson")
     gdf.to_file(buffered_path, driver="GeoJSON")
     return buffered_path
+
+
+def list_available_scenes(
+    kml_path: str,
+    start_date: str = "2024-01-01",
+    end_date: str = "2025-12-31",
+    max_cloud_cover: int = 100,
+    max_items: int = 50
+) -> List[SceneMetadata]:
+    """Поиск всех доступных сцен Sentinel-2 L2A через STAC API с привязкой к дате.
+    Возвращает сцены, отсортированные по дате (сначала новые)."""
+    import logging
+    from pystac_client import Client
+
+    logger = logging.getLogger(__name__)
+    logger.info(f"Поиск сцен за {start_date} — {end_date}, cloud ≤ {max_cloud_cover}%")
+
+    gdf = gpd.read_file(kml_path)
+    if gdf.crs is None:
+        gdf = gdf.set_crs("EPSG:4326")
+    bbox = gdf.total_bounds.tolist()
+
+    client = Client.open("https://earth-search.aws.element84.com/v1")
+    search = client.search(
+        collections=["sentinel-2-l2a"],
+        bbox=bbox,
+        datetime=f"{start_date}/{end_date}",
+        query={"eo:cloud_cover": {"lte": max_cloud_cover}},
+        max_items=max_items,
+    )
+
+    items = list(search.items())
+    logger.info(f"Найдено {len(items)} сцен за период {start_date} — {end_date}")
+
+    scenes = []
+    for item in items:
+        props = item.properties
+        scene_id = item.id
+        date = datetime.fromisoformat(props["datetime"].replace("Z", "+00:00"))
+
+        scenes.append(SceneMetadata(
+            scene_id=scene_id,
+            date=date,
+            cloud_cover=float(props.get("eo:cloud_cover", 99.0)),
+            title=scene_id,
+            preview_url=item.assets.get("thumbnail", {}).href if item.assets.get("thumbnail") else None,
+            download_url=item.self_href
+        ))
+        logger.info(f"  {scene_id} | {date.date()} | cloud={props.get('eo:cloud_cover', 99.0):.1f}%")
+
+    # Сортируем по дате: сначала новые
+    scenes.sort(key=lambda s: s.date, reverse=True)
+    return scenes
 
 
 def list_scenes(request: SearchRequest) -> List[SceneMetadata]:
