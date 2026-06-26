@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "rlm": {
+      "command": "python",
+      "args": ["-m", "rlm"],
+      "env": {
+        "OPENROUTER_API_KEY": "sk-or-...",
+        "LITELLM_MODEL": "openrouter/qwen/qwen3-70b",
+        "COPERNICUS_USERNAME": "your_username",
+        "COPERNICUS_PASSWORD": "your_password"
+      }
+    }
+  }
+}
