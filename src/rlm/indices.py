@@ -86,7 +86,7 @@ def process_scene_indices(safe_path: any, buffer_geojson_path: str, visualize: b
 
     # === RGB (TCI) ===
     if rgb_cache.exists():
-        logger.info(f"RGB загружен из кэша: {rgb_cache}")
+        logger.info(f"RGB загружен из кэша (кеш): {rgb_cache}")
         old_size = rgb_cache.stat().st_size
         if old_size < 30_000:
             logger.warning(f"Кэш RGB слишком мал ({old_size} байт), пересоздаём...")
@@ -232,7 +232,7 @@ def process_scene_indices(safe_path: any, buffer_geojson_path: str, visualize: b
             logger.warning(f"Кэш NDVI слишком мал ({old_size} байт), пересоздаём...")
             ndvi_cache.unlink()
         else:
-            logger.info(f"NDVI загружен из кэша: {ndvi_cache}")
+            logger.info(f"NDVI загружен из кэша (кеш): {ndvi_cache}")
             ndvi_path = str(ndvi_cache)
             ndvi_mean = 0.67
     if not ndvi_cache.exists():

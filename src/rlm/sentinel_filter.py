@@ -9,6 +9,7 @@
 """
 
 import logging
+from collections import defaultdict
 from typing import List, Dict, Optional, Tuple
 
 import geopandas as gpd
@@ -211,19 +212,30 @@ def filter_pipeline(
     )
 
     passed = []
-    total = min(len(items), max_check_items) if max_check_items else len(items)
+    checked_total = 0
 
-    for i, item in enumerate(items):
-        if max_check_items and i >= max_check_items:
-            logger.info(f"Достигнут лимит проверки max_check_items={max_check_items}")
-            break
+    items_by_date = defaultdict(list)
+    for item in items:
+        d = item.properties.get("datetime", "")[:10]
+        items_by_date[d].append(item)
 
+    dates_sorted = sorted(items_by_date.keys())
+    total_days = len(dates_sorted)
+    logger.info(f"  Scenes over {total_days} days, total items: {len(items)}")
+
+    for day_str in dates_sorted:
+        day_items = items_by_date[day_str]
+        best = min(day_items, key=lambda x: float(x.properties.get("eo:cloud_cover", 99.0)))
+        checked_total += 1
+        item = best
+
+        item_id = item.id
         item_id = item.id
         props = item.properties
         date_str = props.get("datetime", "")
         scene_cloud = float(props.get("eo:cloud_cover", 99.0))
 
-        status_prefix = f"  [{i+1:3d}/{total}] {item_id} | {date_str[:10]} | scene_cloud={scene_cloud:.0f}%"
+        status_prefix = f"  [{checked_total:3d}/{total_days}] {item_id} | {date_str[:10]} | scene_cloud={scene_cloud:.0f}%"
 
         assets = item.assets
         visual_asset = assets.get("visual")
@@ -297,7 +309,7 @@ def filter_pipeline(
             continue
 
     logger.info("=" * 60)
-    logger.info(f"Фильтрация завершена. Проверено: {total}, прошло: {len(passed)}")
+    logger.info(f"Фильтрация завершена. Проверено: {checked_total}, прошло: {len(passed)}")
     logger.info("=" * 60)
 
     return passed
