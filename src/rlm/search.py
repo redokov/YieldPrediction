@@ -25,8 +25,8 @@ def read_geometry_file(path):
             for pm in feat.features():
                 g=pm.geometry
                 if not g:continue
-                if g.geom_type=='Polygon':polys.append({'geometry':mapping(g),'properties':{}})
-                elif g.geom_type=='MultiPolygon':
+                if g.geom_type in ('Polygon','LineString','Point'):polys.append({'geometry':mapping(g),'properties':{}})
+                elif g.geom_type in ('MultiPolygon','MultiLineString','MultiPoint'):
                     polys.extend({'geometry':mapping(p),'properties':{}}for p in g.geoms)
         gj={'type':'FeatureCollection','features':[
             {'type':'Feature','geometry':p['geometry'],'properties':p['properties']}for p in polys]}
