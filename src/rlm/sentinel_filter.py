@@ -18,6 +18,7 @@ from rasterio.windows import Window
 from rasterio.features import geometry_mask
 from pyproj import Transformer
 from pystac_client import Client
+from .search import read_geometry_file
 from shapely.geometry import Polygon, MultiPolygon, mapping, box
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ STAC_API_URL = "https://earth-search.aws.element84.com/v1"
 
 def _load_field_polygon(kml_path: str) -> Polygon:
     """Загружает полигон поля из KML, возвращает в EPSG:4326."""
-    gdf = gpd.read_file(kml_path)
+    gdf = read_geometry_file(kml_path)
     if gdf.empty:
         raise ValueError(f"KML {kml_path} не содержит геометрии")
     if gdf.crs is None:

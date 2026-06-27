@@ -7,6 +7,36 @@ import geopandas as gpd
 from .config import settings
 from .models import SceneMetadata, SearchRequest
 from .dagshub_search import get_available_scenes_from_dagshub
+import logging,json,tempfile,os
+def read_geometry_file(path):
+    """Read vector file with fastkml fallback."""
+    try:
+        return gpd.read_file(path)
+    except Exception as e:
+        if not(path.lower().endswith('.kml')or'LIBKML'in str(e)):raise
+        logging.getLogger(__name__).info('KML fallback: %s',e)
+        from fastkml import kml as fastkml_lib
+        from shapely.geometry import mapping
+        with open(path,'rb')as f:
+            k=fastkml_lib.KML()
+            k.from_string(f.read())
+        polys=[]
+        for feat in k.features():
+            for pm in feat.features():
+                g=pm.geometry
+                if not g:continue
+                if g.geom_type=='Polygon':polys.append({'geometry':mapping(g),'properties':{}})
+                elif g.geom_type=='MultiPolygon':
+                    polys.extend({'geometry':mapping(p),'properties':{}}for p in g.geoms)
+        gj={'type':'FeatureCollection','features':[
+            {'type':'Feature','geometry':p['geometry'],'properties':p['properties']}for p in polys]}
+        with tempfile.NamedTemporaryFile(suffix='.geojson',mode='w',encoding='utf-8',delete=False)as tf:
+            json.dump(gj,tf,ensure_ascii=False)
+            tmp=tf.name
+        try:
+            return gpd.read_file(tmp)
+        finally:
+            os.unlink(tmp)
 
 
 def create_buffer(kml_path: str, buffer_meters: int = None) -> str:
@@ -14,7 +44,7 @@ def create_buffer(kml_path: str, buffer_meters: int = None) -> str:
     if buffer_meters is None:
         buffer_meters = settings.buffer_meters
 
-    gdf = gpd.read_file(kml_path)
+    gdf = read_geometry_file(kml_path)
     if gdf.empty:
         raise ValueError(f"Файл {kml_path} не содержит геометрии")
 
@@ -94,7 +124,7 @@ def list_scenes(request: SearchRequest) -> List[SceneMetadata]:
     logger.info("Поиск сцен через STAC API (https://earth-search.aws.element84.com/v1)")
 
     # Читаем геометрию поля
-    gdf = gpd.read_file(request.kml_path)
+    gdf = read_geometry_file(request.kml_path)
     if gdf.crs is None:
         gdf = gdf.set_crs("EPSG:4326")
     bbox = gdf.total_bounds.tolist()  # [minx, miny, maxx, maxy]

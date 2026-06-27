@@ -154,6 +154,18 @@ def test_multi_scene_2024_2025(test_kml, output_dir):
     print(f"\nМногосценовой тест пройден: {len(results)} сцен обработано.")
 
 
+def test_read_geometry_file_kml_fallback():
+    from src.rlm.search import read_geometry_file
+    import glob
+    kml = glob.glob("src/input/*-0012-8-2.kml")
+    assert len(kml) >= 1
+    gdf = read_geometry_file(kml[0])
+    assert len(gdf) >= 1
+    assert gdf.crs is not None
+    assert gdf.crs.to_string() == "EPSG:4326"
+    print(f"OK: KML fallback loaded {len(gdf)} features, CRS={gdf.crs}")
+
+
 def test_filter_pipeline(test_kml):
     """Сценарий 4: двухэтапная фильтрация (STAC + пиксельная проверка SCL)"""
     from src.rlm.sentinel_filter import filter_pipeline
