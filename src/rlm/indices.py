@@ -195,13 +195,22 @@ def process_scene_indices(safe_path: any, buffer_geojson_path: str, visualize: b
 
                 fig, ax = plt.subplots(figsize=(12, 12))
                 ax.imshow(rgb_cropped)
-                gdf_shifted.boundary.plot(ax=ax, color="red", linewidth=3, label="Граница поля")
+                gdf_shifted.boundary.plot(ax=ax, color="red", linewidth=settings.contour_linewidth, label="Граница поля")
                 ax.set_title(f"RGB (TCI) + поле | {scene_id}")
                 ax.legend(loc="upper right")
                 ax.axis("off")
 
                 rgb_file = output_dir / f"{scene_id}_rgb_with_contour.png"
                 plt.savefig(rgb_file, bbox_inches="tight", dpi=300, facecolor='black')
+                if settings.save_rgb_no_contour:
+                    fig2, ax2 = plt.subplots(figsize=(12, 12))
+                    ax2.imshow(rgb_cropped)
+                    ax2.set_title(f"RGB (TCI) | {scene_id}")
+                    ax2.axis("off")
+                    plain_file = output_dir / f"{scene_id}_rgb.png"
+                    plt.savefig(plain_file, bbox_inches="tight", dpi=300, facecolor='black')
+                    plt.close()
+                    logger.info(f"RGB без контура: {plain_file}")
                 plt.close()
 
                 shutil.copy(rgb_file, rgb_cache)
@@ -336,7 +345,7 @@ def process_scene_indices(safe_path: any, buffer_geojson_path: str, visualize: b
                 fig, ax = plt.subplots(figsize=(12, 12))
                 im = ax.imshow(ndvi_arr, cmap="RdYlGn", vmin=-1, vmax=1)
                 plt.colorbar(im, ax=ax, label="NDVI")
-                gdf_shifted.boundary.plot(ax=ax, color="red", linewidth=3, label="Граница поля")
+                gdf_shifted.boundary.plot(ax=ax, color="red", linewidth=settings.contour_linewidth, label="Граница поля")
                 ax.set_title(f"NDVI + поле | {scene_id} | mean={ndvi_mean:.3f}")
                 ax.legend(loc="upper right")
                 ax.axis("off")
