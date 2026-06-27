@@ -120,7 +120,7 @@ def process_scene_indices(safe_path: any, buffer_geojson_path: str, visualize: b
             logger.info(f"Загружаем TCI COG: {tci_url}")
 
             # Промежуточное скачивание полного TCI.tif в output/
-            local_tiff = output_dir / f"{scene_id}_TCI.tif"
+            local_tiff = cache_dir / f"{scene_id}_TCI.tif"
             if not local_tiff.exists():
                 import requests
                 logger.info(f"Скачиваем полный TCI.tif → {local_tiff} ...")
@@ -264,7 +264,7 @@ def process_scene_indices(safe_path: any, buffer_geojson_path: str, visualize: b
                 logger.info(f"Строим B04/B08 URL по scene_id")
 
             logger.info(f"Загружаем B04: {b04_url}")
-            b04_local = output_dir / f"{scene_id}_B04.tif"
+            b04_local = cache_dir / f"{scene_id}_B04.tif"
             if not b04_local.exists():
                 r = requests.get(b04_url, stream=True, timeout=120)
                 r.raise_for_status()
@@ -274,7 +274,7 @@ def process_scene_indices(safe_path: any, buffer_geojson_path: str, visualize: b
                 logger.info(f"B04 скачан ({b04_local.stat().st_size / (1024*1024):.1f} MB)")
 
             logger.info(f"Загружаем B08: {b08_url}")
-            b08_local = output_dir / f"{scene_id}_B08.tif"
+            b08_local = cache_dir / f"{scene_id}_B08.tif"
             if not b08_local.exists():
                 r = requests.get(b08_url, stream=True, timeout=180)
                 r.raise_for_status()
