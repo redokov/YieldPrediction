@@ -63,9 +63,9 @@ src/rlm/
 ├── processor.py               # Оркестратор: create_buffer → list_scenes → process_scene_indices → отчёт
 ├── indices.py                 # Расчёт NDVI/NDWI + визуализация RGB/NDVI с контуром поля
 ├── downloader.py              # Скачивание/доступ к COG-файлам Sentinel-2 L2A
-├── sentinel_filter.py         # Фильтрация облачности (SCL band)
+├── sentinel_filter.py         # Двухэтапная SCL-фильтрация (STAC + SCL mask)
 ├── llm.py                     # Обёртка LiteLLM + OpenRouter (Qwen3-70B)
-└── utils.py                   # Вспомогательные функции (если есть)
+└── server.py                  # MCP сервер (инструменты list_available_scenes, analyze_field)
 ```
 
 ### Ключевые модули и их ответственность
@@ -78,7 +78,7 @@ src/rlm/
 | `dagshub_search.py`  | Альтернативный поиск сцен через прямые COG-файлы на S3 (Dagshub bucket). MGRS-based |
 | `processor.py`       | **Оркестратор бизнес-логики**:<br>• Создание буфера 500 м<br>• Поиск сцен (STAC + fallback на демо)<br>• Запуск расчёта индексов<br>• Формирование отчёта<br>• Многосценовая обработка (`process_multiple_scenes`) |
 | `indices.py`         | Расчёт NDVI, NDWI, визуализация RGB + NDVI с наложением контура поля |
-| `sentinel_filter.py` | Применение облачной маски (SCL band Level-2A) |
+| `sentinel_filter.py` | Двухэтапная фильтрация: 1) STAC pre-filter, 2) SCL-проверка по полю (COG). `filter_pipeline()`, `run()` |
 | `llm.py`             | Взаимодействие с Qwen3 через LiteLLM. Поддержка `call_llm()` |
 | `server.py`          | Реализация MCP-инструментов (`list_available_scenes`, `analyze_field`) |
 | `cli.py`             | Удобный интерфейс командной строки (команды `search`, `analyze`) |

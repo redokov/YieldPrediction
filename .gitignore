@@ -162,3 +162,4 @@ output/
 cache/
 *.tif
 *.png
+*_buffer_*.geojson

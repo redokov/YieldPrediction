@@ -75,7 +75,7 @@ YieldPrediction/
 │   │   ├── processor.py            # Оркестратор: буфер → поиск → индексы → отчёт
 │   │   ├── indices.py              # Расчёт NDVI, NDWI + визуализация (RGB, contour)
 │   │   ├── downloader.py           # Скачивание Sentinel-данных
-│   │   ├── sentinel_filter.py      # Фильтрация облачности (SCL)
+│   │   ├── sentinel_filter.py      # Двухэтапная фильтрация: STAC + SCL mask
 │   │   └── llm.py                  # Обёртка LiteLLM + OpenRouter (Qwen3)
 │   │
 │   ├── input/                      # Входные данные (KML и пр.)
@@ -87,6 +87,7 @@ YieldPrediction/
 ├── tests/
 │   ├── test_e2e_rlm.py             # E2E-тесты
 │   ├── test_processor.py           # Тесты processor/indices
+│   ├── test_e2e_2025_one_per_month.py # E2E: фильтрация по месяцам 2025
 │   └── fixtures/                   # Тестовые данные
 │
 ├── data/
@@ -112,7 +113,7 @@ YieldPrediction/
 - Опционально: JSON-отчёт + текстовый анализ от LLM.
 
 ### Используемые технологии
-- **Sentinel-2** — STAC API (Earth Search by Element 84), Dagshub S3.
+- **Sentinel-2** — STAC API (Earth Search by Element 84, pystac-client), Dagshub S3.
 - `rasterio`, `rioxarray`, `geopandas`, `shapely`, `pystac-client`.
 - `matplotlib` для визуализации (RGB, NDVI, overlay).
 - `litellm` + **OpenRouter** (модель `qwen/qwen3-70b`).
@@ -134,8 +135,7 @@ src/rlm/
 ├── processor.py           # Оркестратор обработки поля
 ├── indices.py             # Расчёт индексов и визуализация
 ├── downloader.py          # Скачивание Sentinel-данных
-├── sentinel_filter.py     # Фильтрация облачности (SCL mask)
-└── utils.py               # Вспомогательные функции
+├── sentinel_filter.py     # Двухэтапная фильтрация: STAC + SCL mask (COG)
 ```
 
 ---
@@ -155,7 +155,8 @@ src/rlm/
 - [x] Обработка облачности (SCL mask)
 - [x] Интеграция с Qwen3 через LiteLLM + OpenRouter
 - [x] Многосценовая обработка
-- [x] E2E-тесты и тесты процессора
+- [x] Двухэтапная SCL-фильтрация (STAC pre-filter + полевая проверка по SCL)
+- [x] E2E-тесты: фильтрация по месяцам 2025
 
 ### 🚧 В разработке / Планируется
 - [ ] Полноценный веб-интерфейс (Streamlit / Gradio)
@@ -181,6 +182,9 @@ rlm search tests/fixtures/test_field.kml
 
 # Полный анализ поля
 rlm analyze tests/fixtures/test_field.kml
+
+# Двухэтапная SCL-фильтрация снимков (STAC + SCL маска)
+python tests/test_e2e_2025_one_per_month.py
 
 # MCP-сервер (для AI-агентов)
 rlm-mcp
