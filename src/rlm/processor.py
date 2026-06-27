@@ -228,3 +228,115 @@ def process_multiple_scenes(
 
     return results
 
+
+def process_filtered_scenes(
+    kml_path: str,
+    start_date: str = "2024-04-01",
+    end_date: str = "2024-08-31",
+    max_cloud_percent: float = 10.0,
+    max_scenes: int = 5,
+    max_scene_cloud_prefilter: float = 90.0,
+) -> List[AnalysisResult]:
+    """
+    Сценарий: получить снимки за период через filter_pipeline (SCL-проверка),
+    выбрать 5 лучших по облачности над полем, скачать и нарисовать RGB+NDVI с контуром.
+    """
+    from .sentinel_filter import filter_pipeline
+
+    logger.info("=" * 70)
+    logger.info("ОБРАБОТКА ОТФИЛЬТРОВАННЫХ СНИМКОВ (SCL-фильтрация)")
+    logger.info(f"  Период: {start_date} — {end_date}")
+    logger.info(f"  Порог облачности над полем: {max_cloud_percent}%")
+    logger.info(f"  Максimum сцен для обработки: {max_scenes}")
+    logger.info("=" * 70)
+
+    # Этап 1: фильтрация через filter_pipeline
+    logger.info("Этап 1: фильтрация снимков через STAC + SCL...")
+    all_scenes = filter_pipeline(
+        kml_path=kml_path,
+        date_range=f"{start_date}/{end_date}",
+        max_cloud_percent=max_cloud_percent,
+        max_scene_cloud_prefilter=max_scene_cloud_prefilter,
+        max_check_items=None,
+    )
+
+    if not all_scenes:
+        logger.warning("Нет снимков, прошедших SCL-фильтрацию.")
+        return []
+
+    # Сортировка по облачности над полем (лучшие первые)
+    all_scenes.sort(key=lambda x: x["cloud_cover_field"])
+
+    logger.info(f"\nНайдено {len(all_scenes)} снимков, прошедших SCL-фильтрацию:")
+    for i, s in enumerate(all_scenes):
+        marker = " ← выбран" if i < max_scenes else ""
+        logger.info(f"  {i+1:3d}. {s['item_id']} | {s['datetime'][:10]} | cloud_field={s['cloud_cover_field']:.1f}%{marker}")
+
+    # Берём первые max_scenes
+    selected_scenes = all_scenes[:max_scenes]
+    logger.info(f"\nОбрабатываем {len(selected_scenes)} снимков...")
+
+    # Этап 2: буфер
+    buffer_path = create_buffer(kml_path, settings.buffer_meters)
+    logger.info(f"Буфер: {buffer_path}")
+
+    # Этап 3: обработка каждой сцены
+    results = []
+    for idx, scene_dict in enumerate(selected_scenes):
+        logger.info(f"\n{'─'*60}")
+        logger.info(f"Сцена {idx+1}/{len(selected_scenes)}: {scene_dict['item_id']}")
+        logger.info(f"  datetime: {scene_dict['datetime']}")
+        logger.info(f"  cloud_cover_field: {scene_dict['cloud_cover_field']}%")
+        logger.info(f"  assets keys: {list(scene_dict['assets'].keys())}")
+
+        # Создаём SceneMetadata с assets
+        scene = SceneMetadata(
+            scene_id=scene_dict["item_id"],
+            date=datetime.fromisoformat(scene_dict["datetime"].replace("Z", "+00:00")),
+            cloud_cover=scene_dict["cloud_cover_field"],
+            title=scene_dict["item_id"],
+            preview_url=None,
+            download_url=scene_dict["assets"].get("visual"),
+            assets=scene_dict["assets"],
+        )
+
+        start_time = datetime.now()
+        indices_result = process_scene_indices(
+            safe_path=scene,
+            buffer_geojson_path=buffer_path,
+            visualize=True,
+            output_dir=Path("output")
+        )
+        duration = (datetime.now() - start_time).total_seconds()
+
+        report_lines = [
+            f"Отчёт по сцене {scene.scene_id}",
+            f"Дата съёмки: {scene.date.date()}",
+            f"Облачность над полем: {scene.cloud_cover:.1f}%",
+            "",
+            "=== Результаты ===",
+            f"NDVI (средний): {indices_result.get('ndvi_mean', 0):.3f}",
+            f"NDWI (средний): {indices_result.get('ndwi_mean', 0):.3f}",
+            f"Время обработки: {duration:.1f} сек",
+            f"RGB: {indices_result.get('rgb_path', '—')}",
+            f"NDVI: {indices_result.get('ndvi_path', '—')}",
+            f"Статус: {indices_result.get('status', 'unknown')}",
+        ]
+        report = "\n".join(report_lines)
+
+        result = AnalysisResult(
+            status=indices_result.get("status", "success"),
+            scenes_found=len(all_scenes),
+            selected_scene=scene,
+            report=report,
+            llm_analysis=None
+        )
+        results.append(result)
+        logger.info(f"Готово: {scene.scene_id} за {duration:.1f}s, NDVI={indices_result.get('ndvi_mean', 0):.3f}")
+
+    logger.info(f"\n{'='*70}")
+    logger.info(f"Обработка завершена. Обработано {len(results)} из {len(all_scenes)} сцен.")
+    logger.info(f"{'='*70}")
+
+    return results
+

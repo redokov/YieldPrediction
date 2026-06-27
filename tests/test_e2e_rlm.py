@@ -184,3 +184,49 @@ def test_filter_pipeline(test_kml):
         print(f"  OK: {r['item_id']} | {r['datetime'][:10]} | cloud_field={r['cloud_cover_field']}%")
 
     print(f"Фильтрация завершена: прошло {len(results)} снимков")
+
+
+def test_filtered_scenes_april_august_2024(test_kml, output_dir):
+    """Сценарий 5: апрель-август 2024, SCL-фильтрация, 5 лучших снимков, RGB+NDVI с контуром"""
+    from src.rlm.processor import process_filtered_scenes
+
+    results = process_filtered_scenes(
+        kml_path=test_kml,
+        start_date="2024-04-01",
+        end_date="2024-08-31",
+        max_cloud_percent=10.0,
+        max_scenes=5,
+        max_scene_cloud_prefilter=90.0,
+    )
+
+    assert len(results) >= 1, f"Должна быть обработана хотя бы 1 сцена, получено {len(results)}"
+    assert len(results) <= 5, f"Должно быть обработано ≤ 5 сцен, получено {len(results)}"
+
+    for i, r in enumerate(results):
+        assert r.status in ("success", "warning"), f"Сцена {i+1}: статус={r.status}"
+        assert r.selected_scene is not None, f"Сцена {i+1}: нет selected_scene"
+        scene_id = r.selected_scene.scene_id
+
+        # RGB файл
+        rgb_file = output_dir / f"{scene_id}_rgb_with_contour.png"
+        cached_rgb = Path("cache") / f"{scene_id}_rgb.png"
+        assert rgb_file.exists() or cached_rgb.exists(), \
+            f"Сцена {i+1} ({scene_id}): нет RGB ({rgb_file}, {cached_rgb})"
+
+        # NDVI файл
+        ndvi_file = output_dir / f"{scene_id}_ndvi_with_contour.png"
+        cached_ndvi = Path("cache") / f"{scene_id}_ndvi.png"
+        assert ndvi_file.exists() or cached_ndvi.exists(), \
+            f"Сцена {i+1} ({scene_id}): нет NDVI ({ndvi_file}, {cached_ndvi})"
+
+        # Проверка размеров
+        size_rgb = rgb_file.stat().st_size if rgb_file.exists() else cached_rgb.stat().st_size
+        size_ndvi = ndvi_file.stat().st_size if ndvi_file.exists() else cached_ndvi.stat().st_size
+        assert size_rgb > 10_000, f"RGB слишком мал: {size_rgb} байт"
+        assert size_ndvi > 10_000, f"NDVI слишком мал: {size_ndvi} байт"
+
+        print(f"  Сцена {i+1}: {scene_id} | {r.selected_scene.date.date()} | "
+              f"cloud_field={r.selected_scene.cloud_cover:.1f}% | "
+              f"RGB={size_rgb/1024:.0f}KB | NDVI={size_ndvi/1024:.0f}KB | OK")
+
+    print(f"\nТест пройден: {len(results)} сцен обработано (апрель-август 2024, SCL-фильтрация).")

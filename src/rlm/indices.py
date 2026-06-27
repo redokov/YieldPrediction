@@ -96,39 +96,45 @@ def process_scene_indices(safe_path: any, buffer_geojson_path: str, visualize: b
     if not rgb_cache.exists():
         logger.info("Загрузка TCI (visual) COG через STAC asset...")
         try:
-            if hasattr(safe_path, 'scene_id') and "S2A_" in safe_path.scene_id:
+            scene_id = getattr(safe_path, 'scene_id', str(safe_path))
+            assets = getattr(safe_path, 'assets', None)
+
+            # Приоритет: прямые ассеты из filter_pipeline
+            if assets and assets.get("visual"):
+                tci_url = assets["visual"]
+                logger.info(f"Используем visual asset из filter_pipeline: {tci_url}")
+            elif hasattr(safe_path, 'preview_url') and "thumbnail.jpg" in (safe_path.preview_url or ""):
+                tci_url = safe_path.preview_url.replace("thumbnail.jpg", "TCI.tif")
+                logger.info(f"Строим TCI URL из preview_url: {tci_url}")
+            elif hasattr(safe_path, 'scene_id') and safe_path.scene_id.startswith(("S2A_", "S2B_", "S2C_")):
                 scene_id = safe_path.scene_id
-                preview = getattr(safe_path, 'preview_url', '')
-                if "thumbnail.jpg" in preview:
-                    tci_url = preview.replace("thumbnail.jpg", "TCI.tif")
-                else:
-                    tile = scene_id.split('_')[1]
-                    year = scene_id[10:14]
-                    month = int(scene_id[14:16])
-                    tci_url = f"https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/{tile[:2]}/{tile[2]}/{tile[3:]}/{year}/{month}/{scene_id}/TCI.tif"
-                logger.info(f"Загружаем TCI COG: {tci_url}")
-
-                # Промежуточное скачивание полного TCI.tif в output/
-                local_tiff = output_dir / f"{scene_id}_TCI.tif"
-                if not local_tiff.exists():
-                    import requests
-                    logger.info(f"Скачиваем полный TCI.tif → {local_tiff} ...")
-                    r = requests.get(tci_url, stream=True, timeout=120)
-                    r.raise_for_status()
-                    with open(local_tiff, 'wb') as f:
-                        for chunk in r.iter_content(chunk_size=8192 * 4):
-                            f.write(chunk)
-                    logger.info(f"TCI.tif скачан успешно ({local_tiff.stat().st_size / (1024*1024):.1f} MB)")
-                else:
-                    logger.info(f"Используем уже скачанный TCI.tif ({local_tiff.stat().st_size / (1024*1024):.1f} MB)")
-
-                src = rasterio.open(str(local_tiff))
-                is_local = True
+                tile = scene_id.split('_')[1]
+                year = scene_id[10:14]
+                month = int(scene_id[14:16])
+                tci_url = f"https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/{tile[:2]}/{tile[2]}/{tile[3:]}/{year}/{month}/{scene_id}/TCI.tif"
+                logger.info(f"Строим TCI URL по scene_id: {tci_url}")
             else:
                 tci_url = "src/input/tci.tif"
                 logger.info("Используется локальный tci.tif (fallback)")
-                src = rasterio.open(tci_url)
-                is_local = True
+
+            logger.info(f"Загружаем TCI COG: {tci_url}")
+
+            # Промежуточное скачивание полного TCI.tif в output/
+            local_tiff = output_dir / f"{scene_id}_TCI.tif"
+            if not local_tiff.exists():
+                import requests
+                logger.info(f"Скачиваем полный TCI.tif → {local_tiff} ...")
+                r = requests.get(tci_url, stream=True, timeout=180)
+                r.raise_for_status()
+                with open(local_tiff, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192 * 4):
+                        f.write(chunk)
+                logger.info(f"TCI.tif скачан успешно ({local_tiff.stat().st_size / (1024*1024):.1f} MB)")
+            else:
+                logger.info(f"Используем уже скачанный TCI.tif ({local_tiff.stat().st_size / (1024*1024):.1f} MB)")
+
+            src = rasterio.open(str(local_tiff))
+            is_local = True
 
             try:
                 logger.info(f"TCI загружен. CRS = {src.crs}, shape = {src.shape}")
@@ -236,15 +242,26 @@ def process_scene_indices(safe_path: any, buffer_geojson_path: str, visualize: b
             from rasterio.transform import rowcol
             import shapely.geometry as geom
 
-            # Строим URL для B04 и B08
-            tile = scene_id.split('_')[1] if '_' in scene_id else "36UYC"
-            year = scene_id[10:14] if len(scene_id) > 14 else "2024"
-            month_raw = int(scene_id[14:16]) if len(scene_id) > 16 else 4
+            assets = getattr(safe_path, 'assets', None)
 
-            base_url = f"https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/{tile[:2]}/{tile[2]}/{tile[3:]}/{year}/{month_raw}/{scene_id}"
-
-            b04_url = f"{base_url}/B04.tif"
-            b08_url = f"{base_url}/B08.tif"
+            # Приоритет: прямые ассеты из filter_pipeline
+            if assets and assets.get("B04") and assets.get("B08"):
+                b04_url = assets["B04"]
+                b08_url = assets["B08"]
+                logger.info(f"Используем B04/B08 assets из filter_pipeline")
+            elif assets and assets.get("red") and assets.get("nir"):
+                b04_url = assets["red"]
+                b08_url = assets["nir"]
+                logger.info(f"Используем red/nir assets из filter_pipeline")
+            else:
+                # Строим URL для B04 и B08
+                tile = scene_id.split('_')[1] if '_' in scene_id else "36UYC"
+                year = scene_id[10:14] if len(scene_id) > 14 else "2024"
+                month_raw = int(scene_id[14:16]) if len(scene_id) > 16 else 4
+                base_url = f"https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/{tile[:2]}/{tile[2]}/{tile[3:]}/{year}/{month_raw}/{scene_id}"
+                b04_url = f"{base_url}/B04.tif"
+                b08_url = f"{base_url}/B08.tif"
+                logger.info(f"Строим B04/B08 URL по scene_id")
 
             logger.info(f"Загружаем B04: {b04_url}")
             b04_local = output_dir / f"{scene_id}_B04.tif"
@@ -259,7 +276,7 @@ def process_scene_indices(safe_path: any, buffer_geojson_path: str, visualize: b
             logger.info(f"Загружаем B08: {b08_url}")
             b08_local = output_dir / f"{scene_id}_B08.tif"
             if not b08_local.exists():
-                r = requests.get(b08_url, stream=True, timeout=120)
+                r = requests.get(b08_url, stream=True, timeout=180)
                 r.raise_for_status()
                 with open(b08_local, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192 * 4):

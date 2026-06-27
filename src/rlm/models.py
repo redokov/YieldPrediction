@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 
 class FieldBoundary(BaseModel):
@@ -17,6 +17,7 @@ class SceneMetadata(BaseModel):
     preview_url: Optional[str] = None
     download_url: Optional[str] = None
     title: str
+    assets: Optional[Dict[str, str]] = None
 
 
 class SearchRequest(BaseModel):
