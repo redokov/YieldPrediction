@@ -63,6 +63,7 @@ def process_scene_indices(safe_path: any, buffer_geojson_path: str, visualize: b
         scene_id = scene_str.split('/')[-1] if '/' in scene_str else scene_str.split('\\')[-1]
 
     rgb_cache = cache_dir / f"{scene_id}_rgb.png"
+    rgb_no_contour_cache = cache_dir / f"{scene_id}_rgb_no_contour.png"
     ndvi_cache = cache_dir / f"{scene_id}_ndvi.png"
 
     try:
@@ -93,6 +94,18 @@ def process_scene_indices(safe_path: any, buffer_geojson_path: str, visualize: b
             rgb_cache.unlink()
         else:
             rgb_path = str(rgb_cache)
+            # Also ensure no-contour output file exists
+            plain_out = output_dir / f"{scene_id}_rgb.png"
+            if not plain_out.exists():
+                if rgb_no_contour_cache.exists():
+                    import shutil
+                    shutil.copy(rgb_no_contour_cache, plain_out)
+                    logger.info(f"RGB без контура из кэша: {plain_out}")
+                else:
+                    # Copy from contour cache as fallback
+                    import shutil
+                    shutil.copy(rgb_cache, plain_out)
+                    logger.info(f"RGB (fallback, с контуром): {plain_out}")
     if not rgb_cache.exists():
         logger.info("Загрузка TCI (visual) COG через STAC asset...")
         try:
@@ -212,6 +225,7 @@ def process_scene_indices(safe_path: any, buffer_geojson_path: str, visualize: b
                         plt.savefig(plain_file, bbox_inches="tight", dpi=300, facecolor='black')
                         plt.close(fig2)
                         logger.info(f"RGB без контура: {plain_file} ({plain_file.stat().st_size} байт)")
+                        shutil.copy(plain_file, rgb_no_contour_cache)
                     except Exception as e:
                         logger.warning(f"RGB без контура не создан: {e}")
                 plt.close(fig)
