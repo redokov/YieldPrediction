@@ -53,6 +53,7 @@ def create_buffer(kml_path: str, buffer_meters: int = None) -> str:
     gdf['geometry'] = gdf.geometry.buffer(buffer_meters)
     gdf = gdf.to_crs("EPSG:4326")  # обратно в WGS84
 
+    # Если LineString/Point, буфер уже превратил их в Polygon
     buffered_path = kml_path.replace(".kml", f"_buffer_{buffer_meters}m.geojson")
     gdf.to_file(buffered_path, driver="GeoJSON")
     return buffered_path

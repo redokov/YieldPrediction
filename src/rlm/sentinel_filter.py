@@ -42,6 +42,14 @@ def _load_field_polygon(kml_path: str) -> Polygon:
         gdf = gdf.to_crs("EPSG:4326")
 
     geom = gdf.geometry.iloc[0]
+    
+    # Convert LineString/Point to Polygon by buffering
+    if geom.geom_type not in ("Polygon", "MultiPolygon"):
+        logger.info(f"Geometry type {geom.geom_type}, buffering to polygon")
+        utm = gdf.estimate_utm_crs()
+        geom_proj = gdf.to_crs(utm).geometry.iloc[0].buffer(50.0)
+        geom = gpd.GeoSeries([geom_proj], crs=utm).to_crs("EPSG:4326").iloc[0]
+    
     if geom.geom_type == "MultiPolygon":
         geom = max(geom.geoms, key=lambda g: g.area)
     return geom
