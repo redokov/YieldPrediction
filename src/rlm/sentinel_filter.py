@@ -4,22 +4,21 @@
 Этап 1 — Грубая фильтрация через STAC API (intersects + cloud pre-filter).
 Этап 2 — Точная пиксельная проверка: покрытие поля + nodata + облачность по SCL.
 
-Использует COG (Cloud Optimized GeoTIFF) — rasterio читает только нужные регионы
-удалённых файлов через HTTP Range Requests, без скачивания целых файлов.
+Использует COG (Cloud Optimized GeoTIFF) — rasterio читает только window
+вокруг поля через HTTP Range Requests, без скачивания целых файлов.
 """
 
 import logging
-from datetime import datetime
-from typing import List, Dict, Optional
-from pathlib import Path
+from typing import List, Dict, Optional, Tuple
 
 import geopandas as gpd
 import numpy as np
 import rasterio
-from rasterio.mask import mask
-from rasterio.transform import rowcol
-from shapely.geometry import Polygon, MultiPolygon, mapping, shape
+from rasterio.windows import Window
+from rasterio.features import geometry_mask
+from pyproj import Transformer
 from pystac_client import Client
+from shapely.geometry import Polygon, MultiPolygon, mapping, box
 
 logger = logging.getLogger(__name__)
 
@@ -42,113 +41,101 @@ def _load_field_polygon(kml_path: str) -> Polygon:
 
     geom = gdf.geometry.iloc[0]
     if geom.geom_type == "MultiPolygon":
-        # Берём самый большой полигон
         geom = max(geom.geoms, key=lambda g: g.area)
     return geom
 
 
+def _project_polygon(polygon: Polygon, dst_crs) -> Polygon:
+    """Перепроецирует полигон из EPSG:4326 в dst_crs."""
+    transformer = Transformer.from_crs("EPSG:4326", dst_crs, always_xy=True)
+    if polygon.geom_type == "MultiPolygon":
+        polys = []
+        for p in polygon.geoms:
+            coords = [transformer.transform(x, y) for x, y in p.exterior.coords]
+            polys.append(Polygon(coords))
+        return MultiPolygon(polys)
+    coords = [transformer.transform(x, y) for x, y in polygon.exterior.coords]
+    return Polygon(coords)
+
+
 def _polygon_fully_within_bounds(polygon_4326: Polygon, src_bounds, src_crs) -> bool:
     """Проверяет, что полигон ПОЛНОСТЬЮ попадает в bounds снимка."""
-    from shapely.geometry import box
-    import pyproj
-
-    # Перепроецируем полигон в CRS снимка
-    transformer = pyproj.Transformer.from_crs("EPSG:4326", src_crs, always_xy=True)
-    coords = [transformer.transform(x, y) for x, y in polygon_4326.exterior.coords]
-    polygon_proj = Polygon(coords)
-
-    # Bounds снимка как полигон
+    polygon_proj = _project_polygon(polygon_4326, src_crs)
     scene_box = box(*src_bounds)
-
     return scene_box.contains(polygon_proj)
 
 
-def _check_nodata_inside_polygon(
-    src_url: str, polygon_4326: Polygon, src_crs
-) -> float:
+def _read_field_window(src_url: str, polygon_4326: Polygon, band: int = 1) -> Tuple[np.ndarray, rasterio.Affine, Polygon]:
     """
-    Читает пиксели внутри полигона из бэнда (B04) и возвращает долю nodata.
-    Использует COG windowed read — только нужный регион.
+    Читает bounding box поля из COG и возвращает:
+    (data, transform, polygon_in_src_crs).
+    Использует Windowed read — только нужные пиксели.
     """
-    import pyproj
-
     with rasterio.open(src_url) as src:
-        # Перепроецируем полигон в CRS снимка
-        transformer = pyproj.Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
+        polygon_proj = _project_polygon(polygon_4326, src.crs)
+        minx, miny, maxx, maxy = polygon_proj.bounds
 
-        def _transform_polygon(poly):
-            coords = [transformer.transform(x, y) for x, y in poly.exterior.coords]
-            return Polygon(coords)
+        # Пиксельные координаты bbox
+        row1, col1 = src.index(minx, maxy)
+        row2, col2 = src.index(maxx, miny)
+        row_start, row_stop = min(row1, row2), max(row1, row2) + 1
+        col_start, col_stop = min(col1, col2), max(col1, col2) + 1
 
-        if polygon_4326.geom_type == "MultiPolygon":
-            polygon_proj = MultiPolygon([_transform_polygon(p) for p in polygon_4326.geoms])
-        else:
-            polygon_proj = _transform_polygon(polygon_4326)
+        # Ограничиваем размерами снимка
+        row_start = max(0, row_start)
+        col_start = max(0, col_start)
+        row_stop = min(src.height, row_stop)
+        col_stop = min(src.width, col_stop)
 
-        # Читаем только область полигона (COG windowed read)
-        try:
-            out_image, out_transform = mask(
-                src, [mapping(polygon_proj)], crop=True, nodata=0, all_touched=True
-            )
-        except ValueError:
-            # Полигон не пересекается с растром
-            return 1.0  # 100% nodata
-
-        data = out_image[0]
-        total_pixels = data.size
-        if total_pixels == 0:
-            return 1.0
-
-        # Sentinel-2 L2A: nodata = 0, valid pixels > 0
-        nodata_pixels = np.sum(data == 0)
-        nodata_percent = nodata_pixels / total_pixels
-
-        logger.debug(
-            f"  nodata check: {nodata_pixels}/{total_pixels} = {nodata_percent:.1%}"
-        )
-        return nodata_percent
+        window = Window.from_slices((row_start, row_stop), (col_start, col_stop))
+        data = src.read(band, window=window, boundless=False)
+        transform = src.window_transform(window)
+        return data, transform, polygon_proj
 
 
-def _check_cloud_over_field(
-    scl_url: str, polygon_4326: Polygon
-) -> float:
+def _check_nodata_inside_polygon(src_url: str, polygon_4326: Polygon) -> float:
     """
-    Читает SCL-слой в области полигона и возвращает процент облачных пикселей.
-    Использует COG windowed read.
+    Читает пиксели внутри полигона и возвращает долю nodata.
+    Sentinel-2 L2A: nodata = 0.
     """
-    import pyproj
+    data, transform, polygon_proj = _read_field_window(src_url, polygon_4326, band=1)
+    if data.size == 0:
+        return 1.0
 
-    with rasterio.open(scl_url) as src:
-        transformer = pyproj.Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
+    mask = geometry_mask(
+        [mapping(polygon_proj)], transform=transform, invert=True, out_shape=data.shape
+    )
+    field_pixels = data[mask]
+    if field_pixels.size == 0:
+        return 1.0
 
-        def _transform_polygon(poly):
-            coords = [transformer.transform(x, y) for x, y in poly.exterior.coords]
-            return Polygon(coords)
+    nodata_pixels = np.sum(field_pixels == 0)
+    return nodata_pixels / field_pixels.size
 
-        if polygon_4326.geom_type == "MultiPolygon":
-            polygon_proj = MultiPolygon([_transform_polygon(p) for p in polygon_4326.geoms])
-        else:
-            polygon_proj = _transform_polygon(polygon_4326)
 
-        try:
-            out_image, out_transform = mask(
-                src, [mapping(polygon_proj)], crop=True, nodata=0, all_touched=True
-            )
-        except ValueError:
-            return 100.0
+def _check_cloud_over_field(scl_url: str, polygon_4326: Polygon) -> float:
+    """
+    Читает SCL-слой в области поля и возвращает процент облачных пикселей
+    только по валидным (не nodata) пикселям внутри полигона.
+    """
+    data, transform, polygon_proj = _read_field_window(scl_url, polygon_4326, band=1)
+    if data.size == 0:
+        return 100.0
 
-        scl = out_image[0]
-        total_pixels = np.sum(scl > 0)  # исключаем nodata
-        if total_pixels == 0:
-            return 100.0
+    mask = geometry_mask(
+        [mapping(polygon_proj)], transform=transform, invert=True, out_shape=data.shape
+    )
+    field_pixels = data[mask]
+    if field_pixels.size == 0:
+        return 100.0
 
-        cloud_pixels = np.sum(np.isin(scl, list(CLOUD_SCL_CLASSES)))
-        cloud_percent = cloud_pixels / total_pixels * 100
+    valid = field_pixels > 0
+    valid_count = np.count_nonzero(valid)
+    if valid_count == 0:
+        return 100.0
 
-        logger.debug(
-            f"  cloud check: {cloud_pixels}/{total_pixels} = {cloud_percent:.1f}%"
-        )
-        return cloud_percent
+    cloud_count = np.count_nonzero(np.isin(field_pixels[valid], list(CLOUD_SCL_CLASSES)))
+    return cloud_count / valid_count * 100
 
 
 def filter_pipeline(
@@ -156,6 +143,7 @@ def filter_pipeline(
     date_range: str = "2022-01-01/2025-12-31",
     max_cloud_percent: float = 10.0,
     max_scene_cloud_prefilter: float = 90.0,
+    max_check_items: Optional[int] = None,
 ) -> List[Dict]:
     """
     Двухэтапная фильтрация снимков Sentinel-2 L2A.
@@ -167,15 +155,16 @@ def filter_pipeline(
     date_range : str
         Диапазон дат в формате "YYYY-MM-DD/YYYY-MM-DD".
     max_cloud_percent : float
-        Максимально допустимый процент облачности над полем (по SCL). По умолчанию 10%.
+        Максимально допустимый процент облачности над полем (по SCL).
     max_scene_cloud_prefilter : float
-        Предварительный фильтр по общей облачности сцены. По умолчанию 90%.
+        Предварительный фильтр по общей облачности сцены.
+    max_check_items : int | None
+        Максимальное количество снимков для точной проверки.
+        Полезно для тестов и ускорения.
 
     Возвращает
     ----------
-    List[Dict] — список прошедших фильтрацию снимков. Каждый элемент:
-        item_id, datetime, cloud_cover_scene, cloud_cover_field,
-        nodata_percent, assets (dict с href для visual, red, green, blue, nir, scl)
+    List[Dict] — список прошедших фильтрацию снимков.
     """
     logger.info("=" * 60)
     logger.info("Запуск filter_pipeline")
@@ -183,13 +172,18 @@ def filter_pipeline(
     logger.info(f"  Период: {date_range}")
     logger.info(f"  Порог облачности над полем: {max_cloud_percent}%")
     logger.info(f"  Предфильтр общей облачности: {max_scene_cloud_prefilter}%")
+    if max_check_items:
+        logger.info(f"  Лимит проверяемых снимков: {max_check_items}")
     logger.info("=" * 60)
 
     # ── Этап 1: STAC-поиск ──
     logger.info("Этап 1: Поиск сцен через STAC API (intersects)...")
 
     field_polygon = _load_field_polygon(kml_path)
-    logger.info(f"  Полигон поля: {field_polygon.area:.6f} кв.град, центр ~({field_polygon.centroid.x:.4f}, {field_polygon.centroid.y:.4f})")
+    logger.info(
+        f"  Полигон поля: {field_polygon.area:.6f} кв.град, "
+        f"центр ~({field_polygon.centroid.x:.4f}, {field_polygon.centroid.y:.4f})"
+    )
 
     client = Client.open(STAC_API_URL)
     search = client.search(
@@ -197,24 +191,32 @@ def filter_pipeline(
         intersects=mapping(field_polygon),
         datetime=date_range,
         query={"eo:cloud_cover": {"lte": max_scene_cloud_prefilter}},
-        max_items=None,  # Все снимки за период
+        max_items=None,
     )
 
     items = list(search.items())
-    logger.info(f"  Найдено снимков (общая облачность ≤ {max_scene_cloud_prefilter}%): {len(items)}")
+    logger.info(
+        f"  Найдено снимков (общая облачность ≤ {max_scene_cloud_prefilter}%): {len(items)}"
+    )
 
     if not items:
         logger.warning("Снимки не найдены. Проверьте период и геометрию поля.")
         return []
 
     # ── Этап 2: Пиксельная проверка ──
-    logger.info(f"Этап 2: Пиксельная проверка {len(items)} снимков...")
-    logger.info(f"  Критерии: покрытие 100%, nodata=0%, облачность над полем ≤ {max_cloud_percent}%")
+    logger.info(f"Этап 2: Пиксельная проверка снимков...")
+    logger.info(
+        f"  Критерии: покрытие 100%, nodata=0%, облачность над полем ≤ {max_cloud_percent}%"
+    )
 
     passed = []
-    total = len(items)
+    total = min(len(items), max_check_items) if max_check_items else len(items)
 
     for i, item in enumerate(items):
+        if max_check_items and i >= max_check_items:
+            logger.info(f"Достигнут лимит проверки max_check_items={max_check_items}")
+            break
+
         item_id = item.id
         props = item.properties
         date_str = props.get("datetime", "")
@@ -222,7 +224,6 @@ def filter_pipeline(
 
         status_prefix = f"  [{i+1:3d}/{total}] {item_id} | {date_str[:10]} | scene_cloud={scene_cloud:.0f}%"
 
-        # Получаем href нужных ассетов. В pystac item.assets — dict[str, pystac.Asset]
         assets = item.assets
         visual_asset = assets.get("visual")
         visual_href = visual_asset.href if visual_asset else None
@@ -236,7 +237,7 @@ def filter_pipeline(
             continue
 
         try:
-            # A. Проверка покрытия
+            # A. Проверка полного покрытия
             with rasterio.open(visual_href) as vis_src:
                 vis_bounds = vis_src.bounds
                 vis_crs = vis_src.crs
@@ -245,37 +246,29 @@ def filter_pipeline(
                 logger.info(f"{status_prefix} → ОТБРАКОВАНО: поле не полностью в bounds снимка")
                 continue
 
-            # Проверка nodata внутри поля (по B04 или другому бэнду)
+            # B. Проверка nodata внутри поля
             nodata_band_url = b04_href if b04_href else visual_href
-            nodata_pct = _check_nodata_inside_polygon(
-                nodata_band_url, field_polygon, vis_crs
-            )
+            nodata_pct = _check_nodata_inside_polygon(nodata_band_url, field_polygon)
             if nodata_pct > 0:
-                logger.info(
-                    f"{status_prefix} → ОТБРАКОВАНО: nodata={nodata_pct:.1%} внутри поля"
-                )
+                logger.info(f"{status_prefix} → ОТБРАКОВАНО: nodata={nodata_pct:.1%} внутри поля")
                 continue
 
-            # B. Проверка облачности над полем по SCL
+            # C. Проверка облачности над полем по SCL
             cloud_pct = _check_cloud_over_field(scl_href, field_polygon)
             if cloud_pct > max_cloud_percent:
-                logger.info(
-                    f"{status_prefix} → ОТБРАКОВАНО: облачность над полем={cloud_pct:.1f}%"
-                )
+                logger.info(f"{status_prefix} → ОТБРАКОВАНО: облачность над полем={cloud_pct:.1f}%")
                 continue
 
-            # Всё ОК — снимок проходит
             logger.info(
                 f"{status_prefix} → ПРОШЁЛ ✓ | cloud_field={cloud_pct:.1f}% | nodata={nodata_pct:.1%}"
             )
 
-            # Собираем ассеты (pystac Asset → .href)
+            # Собираем ассеты
             result_assets = {}
             for key in ["visual", "red", "green", "blue", "nir", "scl", "B04", "B03", "B02", "B08"]:
                 asset = assets.get(key)
                 if asset:
                     result_assets[key] = asset.href
-            # Fallback: S2 L2A может использовать band names вместо B## нотации
             if "red" not in result_assets and "B04" in result_assets:
                 result_assets["red"] = result_assets["B04"]
             if "green" not in result_assets and "B03" in result_assets:
@@ -286,7 +279,6 @@ def filter_pipeline(
                 result_assets["nir"] = result_assets["B08"]
             if "visual" not in result_assets and "TCI" in assets:
                 result_assets["visual"] = assets["TCI"].href
-            # Fallback: если visual всё ещё нет — используем то, что нашли
             if "visual" not in result_assets:
                 result_assets["visual"] = visual_href
 
@@ -315,6 +307,7 @@ def run(
     date_range: str = "2022-01-01/2025-12-31",
     max_cloud_percent: float = 10.0,
     max_scene_cloud_prefilter: float = 90.0,
+    max_check_items: Optional[int] = None,
 ) -> List[Dict]:
     """Алиас для обратной совместимости с примером из ТЗ."""
     return filter_pipeline(
@@ -322,4 +315,5 @@ def run(
         date_range=date_range,
         max_cloud_percent=max_cloud_percent,
         max_scene_cloud_prefilter=max_scene_cloud_prefilter,
+        max_check_items=max_check_items,
     )

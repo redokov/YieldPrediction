@@ -161,26 +161,26 @@ def test_filter_pipeline(test_kml):
     results = filter_pipeline(
         kml_path=test_kml,
         date_range="2024-05-01/2024-06-30",  # май–июнь 2024
-        max_cloud_percent=15.0,
-        max_scene_cloud_prefilter=90.0,
+        max_cloud_percent=20.0,
+        max_scene_cloud_prefilter=80.0,
+        max_check_items=5,
     )
 
     assert isinstance(results, list), "Результат должен быть списком"
 
-    if len(results) > 0:
-        for r in results:
-            assert "item_id" in r
-            assert "datetime" in r
-            assert "cloud_cover_scene" in r
-            assert "cloud_cover_field" in r
-            assert "nodata_percent" in r
-            assert "assets" in r
-            assert r["cloud_cover_field"] <= 15.0, \
-                f"Облачность над полем {r['cloud_cover_field']}% > порога 15%"
-            assert r["nodata_percent"] == 0.0, \
-                f"Nodata над полем {r['nodata_percent']}% — должно быть 0"
-            assert "visual" in r["assets"] or "TCI" in str(r["assets"]), \
-                f"Должен быть visual ассет: {r['assets'].keys()}"
-            print(f"  OK: {r['item_id']} | {r['datetime'][:10]} | cloud_field={r['cloud_cover_field']}%")
+    for r in results:
+        assert "item_id" in r
+        assert "datetime" in r
+        assert "cloud_cover_scene" in r
+        assert "cloud_cover_field" in r
+        assert "nodata_percent" in r
+        assert "assets" in r
+        assert r["cloud_cover_field"] <= 20.0, \
+            f"Облачность над полем {r['cloud_cover_field']}% > порога 20%"
+        assert r["nodata_percent"] == 0.0, \
+            f"Nodata над полем {r['nodata_percent']}% — должно быть 0"
+        assert "visual" in r["assets"] or "TCI" in str(r["assets"]), \
+            f"Должен быть visual ассет: {r['assets'].keys()}"
+        print(f"  OK: {r['item_id']} | {r['datetime'][:10]} | cloud_field={r['cloud_cover_field']}%")
 
-    print(f"Фильтрация завершена: проверено снимков, прошло {len(results)}")
+    print(f"Фильтрация завершена: прошло {len(results)} снимков")
