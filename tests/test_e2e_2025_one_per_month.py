@@ -1,6 +1,6 @@
 """
 E2E тесты для периода апрель–октябрь 2025.
-Поле: src/input/кур-кур-0012-8-2.kml
+Поле: src/input/kur-kur-0012-8-2.geojson
 
 Тест 1: показать доступные даты с SCL-фильтрацией
 Тест 2: скачать по одному снимку за каждый месяц с RGB + NDVI
@@ -9,7 +9,7 @@ import pytest
 from pathlib import Path
 from datetime import datetime
 
-KML_PATH = "src/input/кур-кур-0012-8-2.kml"
+GEO_PATH = "src/input/kur-kur-0012-8-2.geojson"
 
 # Месяцы для теста 2: апрель–октябрь 2025
 MONTHS_2025 = [
@@ -49,10 +49,10 @@ def test_show_available_dates_2025(caplog):
     print("\n" + "=" * 70)
     print("ТЕСТ 1: Доступные даты апрель–октябрь 2025")
     print("=" * 70)
-    print(f"Поле: {KML_PATH}")
+    print(f"Поле: {GEO_PATH}")
 
     all_scenes = filter_pipeline(
-        kml_path=KML_PATH,
+        kml_path=GEO_PATH,
         date_range="2025-04-01/2025-10-31",
         max_cloud_percent=30.0,
         max_scene_cloud_prefilter=90.0,
@@ -110,7 +110,7 @@ def test_download_one_per_month_2025(output_dir):
     logger.setLevel(logging.INFO)
 
     # Создаём буфер (один на все месяцы)
-    buffer_path = create_buffer(KML_PATH, settings.buffer_meters)
+    buffer_path = create_buffer(GEO_PATH, settings.buffer_meters)
     print(f"\nБуфер создан: {buffer_path}")
 
     results = []
@@ -125,7 +125,7 @@ def test_download_one_per_month_2025(output_dir):
 
         # Фильтрация через filter_pipeline (SCL-проверка)
         scenes = filter_pipeline(
-            kml_path=KML_PATH,
+            kml_path=GEO_PATH,
             date_range=f"{start_date}/{end_date}",
             max_cloud_percent=30.0,
             max_scene_cloud_prefilter=90.0,
