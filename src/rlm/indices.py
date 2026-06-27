@@ -203,15 +203,18 @@ def process_scene_indices(safe_path: any, buffer_geojson_path: str, visualize: b
                 rgb_file = output_dir / f"{scene_id}_rgb_with_contour.png"
                 plt.savefig(rgb_file, bbox_inches="tight", dpi=300, facecolor='black')
                 if settings.save_rgb_no_contour:
-                    fig2, ax2 = plt.subplots(figsize=(12, 12))
-                    ax2.imshow(rgb_cropped)
-                    ax2.set_title(f"RGB (TCI) | {scene_id}")
-                    ax2.axis("off")
-                    plain_file = output_dir / f"{scene_id}_rgb.png"
-                    plt.savefig(plain_file, bbox_inches="tight", dpi=300, facecolor='black')
-                    plt.close()
-                    logger.info(f"RGB без контура: {plain_file}")
-                plt.close()
+                    try:
+                        fig2, ax2 = plt.subplots(figsize=(12, 12))
+                        ax2.imshow(rgb_cropped)
+                        ax2.set_title(f"RGB (TCI) | {scene_id}")
+                        ax2.axis("off")
+                        plain_file = output_dir / f"{scene_id}_rgb.png"
+                        plt.savefig(plain_file, bbox_inches="tight", dpi=300, facecolor='black')
+                        plt.close(fig2)
+                        logger.info(f"RGB без контура: {plain_file} ({plain_file.stat().st_size} байт)")
+                    except Exception as e:
+                        logger.warning(f"RGB без контура не создан: {e}")
+                plt.close(fig)
 
                 shutil.copy(rgb_file, rgb_cache)
                 rgb_path = str(rgb_file)
