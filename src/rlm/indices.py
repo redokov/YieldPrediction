@@ -86,6 +86,11 @@ def process_scene_indices(safe_path: any, buffer_geojson_path: str, visualize: b
     ndvi_mean = 0.0
 
     # === RGB (TCI) ===
+    # Если есть кэш с контуром, но нет кэша без контура — удаляем и перегенерируем заново
+    if rgb_cache.exists() and not rgb_no_contour_cache.exists():
+        logger.info("Нет кэша RGB без контура, удаляем старый кэш для перегенерации...")
+        rgb_cache.unlink()
+    
     if rgb_cache.exists():
         logger.info(f"RGB загружен из кэша (кеш): {rgb_cache}")
         old_size = rgb_cache.stat().st_size
@@ -102,10 +107,10 @@ def process_scene_indices(safe_path: any, buffer_geojson_path: str, visualize: b
                     shutil.copy(rgb_no_contour_cache, plain_out)
                     logger.info(f"RGB без контура из кэша: {plain_out}")
                 else:
-                    # Copy from contour cache as fallback
+                    # Fallback: копируем контурный как output (с предупреждением)
                     import shutil
                     shutil.copy(rgb_cache, plain_out)
-                    logger.info(f"RGB (fallback, с контуром): {plain_out}")
+                    logger.warning(f"RGB без контура (с контуром из кэша): {plain_out}")
     if not rgb_cache.exists():
         logger.info("Загрузка TCI (visual) COG через STAC asset...")
         try:
